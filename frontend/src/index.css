@@ -177,7 +177,6 @@
   
   /* Neon Glow Effect */
   .neon-glow {
-    @apply shadow-lg;
     box-shadow: 0 0 20px oklch(0.65 0.25 330 / 0.3), 
                 0 0 40px oklch(0.55 0.28 260 / 0.2);
   }
