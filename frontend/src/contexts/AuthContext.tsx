@@ -40,7 +40,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error && error.code !== 'PGRST116') {
         console.error('Error fetching profile:', error)
-        return
+        throw error // Renvoyer l'erreur pour une gestion plus claire
       }
 
       setProfile(data)
@@ -51,11 +51,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const ensureUserProfile = async (user: User) => {
     try {
-      const { data: existingProfile } = await supabase
+      const { data: existingProfile, error: fetchError } = await supabase
         .from('users')
         .select('id')
         .eq('id', user.id)
         .single()
+
+      if (fetchError && fetchError.code !== 'PGRST116') {
+        throw fetchError // Renvoyer l'erreur de base de données
+      }
 
       if (!existingProfile) {
         const { error } = await supabase.from('users').insert({
@@ -69,7 +73,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           simulations_limit: 10,
         })
 
-        if (error) console.error('Error creating user profile:', error)
+        if (error) {
+          console.error('Error creating user profile:', error)
+          throw error // Renvoyer l'erreur de création de profil
+        }
       }
 
       await fetchUserProfile(user.id)
