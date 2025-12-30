@@ -30,22 +30,37 @@ serve(async (req) => {
   }
 
   try {
-    const supabaseClient = createClient(
-      Deno.env.get('SUPABASE_URL') ?? '',
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-    )
-
-    const { simulationId, userId, config, authToken } = await req.json()
+    const authToken = req.headers.get('Authorization')?.replace('Bearer ', '')
+    const { simulationId, userId, config } = await req.json()
     
     console.log('Request data:', { simulationId, userId, config: Object.keys(config) })
 
     // Validate required fields
     if (!simulationId || !userId || !config || !authToken) {
-      throw new Error('Missing required fields: simulationId, userId, config, or authToken')
+      throw new Error('Missing required fields: simulationId, userId, config, or Authorization header')
     }
 
-    // Verify user can run simulation
-    const { data: user, error: userError } = await supabaseClient
+    // Client pour les opérations RLS (vérification utilisateur)
+    const supabaseUserClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      {
+        global: {
+          headers: {
+            Authorization: authToken ? `Bearer ${authToken}` : '',
+          },
+        },
+      }
+    )
+
+    // Client pour les opérations de service (mise à jour du statut)
+    const supabaseServiceRoleClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+    )
+
+    // Vérification utilisateur (via RLS)
+    const { data: user, error: userError } = await supabaseUserClient
       .from('users')
       .select('simulations_used, simulations_limit, subscription_status')
       .eq('id', userId)
@@ -64,7 +79,7 @@ serve(async (req) => {
     }
 
     // Update simulation status to running
-    const { error: updateError } = await supabaseClient
+    const { error: updateError } = await supabaseServiceRoleClient
       .from('simulations')
       .update({
         status: 'running',
@@ -87,7 +102,7 @@ serve(async (req) => {
       const progress = Math.round((step / totalSteps) * 100)
       
       // Update progress
-      await supabaseClient
+      await supabaseServiceRoleClient
         .from('simulations')
         .update({ progress })
         .eq('id', simulationId)
@@ -114,7 +129,7 @@ serve(async (req) => {
     }
 
     // Update simulation as completed
-    const { error: completeError } = await supabaseClient
+    const { error: completeError } = await supabaseServiceRoleClient
       .from('simulations')
       .update({
         status: 'completed',
@@ -126,7 +141,7 @@ serve(async (req) => {
     if (completeError) throw completeError
 
     // Store results
-    const { error: resultsError } = await supabaseClient
+    const { error: resultsError } = await supabaseServiceRoleClient
       .from('simulation_results')
       .insert({
         simulation_id: simulationId,
@@ -136,7 +151,7 @@ serve(async (req) => {
     if (resultsError) throw resultsError
 
     // Increment user's simulation count
-    const { error: incrementError } = await supabaseClient
+    const { error: incrementError } = await supabaseServiceRoleClient
       .rpc('increment_simulations_used', { user_uuid: userId })
 
     if (incrementError) console.error('Failed to increment count:', incrementError)
@@ -160,12 +175,12 @@ serve(async (req) => {
     
     // Try to update simulation as failed
     try {
-      const supabaseClient = createClient(
+      const supabaseServiceRoleClient = createClient(
         Deno.env.get('SUPABASE_URL') ?? '',
-        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '' // Utiliser la clé de rôle de service pour la mise à jour critique
       )
       
-      await supabaseClient
+      await supabaseServiceRoleClient
         .from('simulations')
         .update({
           status: 'failed',
