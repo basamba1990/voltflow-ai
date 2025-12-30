@@ -85,7 +85,9 @@ export const runSimulation = async (simulationId: string, config: any) => {
       simulationId,
       userId: user.id,
       config,
-      authToken: session.access_token,
+    },
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
     },
   })
 
@@ -145,6 +147,9 @@ export const uploadGeometryFile = async (file: File, simulationId?: string) => {
     reader.readAsDataURL(file)
   })
 
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session) throw new Error('No active session')
+
   const { data, error } = await supabase.functions.invoke('upload-geometry', {
     body: {
       fileName: file.name,
@@ -152,6 +157,9 @@ export const uploadGeometryFile = async (file: File, simulationId?: string) => {
       fileType: file.type,
       userId: user.id,
       simulationId,
+    },
+    headers: {
+      Authorization: `Bearer ${session.access_token}`,
     },
   })
 
