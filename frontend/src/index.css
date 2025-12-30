@@ -1,9 +1,13 @@
+/* ===============================
+   TAILWIND BASE
+   =============================== */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-@custom-variant dark (&:is(.dark *));
-
+/* ===============================
+   THEME INLINE VARIABLES
+   =============================== */
 @theme inline {
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -43,8 +47,10 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
+/* ===============================
+   ROOT VARIABLES - LIGHT MODE
+   =============================== */
 :root {
-  /* VoltFlow AI - Palette OKLCH Neon-Noir */
   --primary: oklch(0.65 0.25 330);
   --primary-foreground: oklch(0.98 0.01 0);
 
@@ -91,21 +97,69 @@
   --popover-foreground: oklch(0.95 0.02 60);
 }
 
+/* ===============================
+   DARK MODE VARIABLES
+   =============================== */
 .dark {
-  /* Dark theme same as root */
-  @apply dark;
+  --primary: oklch(0.65 0.25 330);
+  --primary-foreground: oklch(0.98 0.01 0);
+
+  --secondary: oklch(0.55 0.28 260);
+  --secondary-foreground: oklch(0.98 0.01 0);
+
+  --accent: oklch(0.25 0.08 260);
+  --accent-foreground: oklch(0.95 0.02 60);
+
+  --muted: oklch(0.35 0.05 260);
+  --muted-foreground: oklch(0.75 0.05 60);
+
+  --destructive: oklch(0.65 0.25 25);
+  --destructive-foreground: oklch(0.98 0.01 0);
+
+  --border: oklch(0.25 0.08 260 / 0.3);
+  --input: oklch(0.25 0.08 260 / 0.2);
+  --ring: oklch(0.65 0.25 330 / 0.5);
+
+  --sidebar: oklch(0.15 0.05 260);
+  --sidebar-foreground: oklch(0.95 0.02 60);
+  --sidebar-primary: oklch(0.65 0.25 330);
+  --sidebar-primary-foreground: oklch(0.98 0.01 0);
+  --sidebar-accent: oklch(0.55 0.28 260);
+  --sidebar-accent-foreground: oklch(0.98 0.01 0);
+  --sidebar-border: oklch(0.25 0.08 260 / 0.3);
+  --sidebar-ring: oklch(0.65 0.25 330 / 0.5);
+
+  --chart-1: oklch(0.65 0.25 330);
+  --chart-2: oklch(0.55 0.28 260);
+  --chart-3: oklch(0.75 0.15 200);
+  --chart-4: oklch(0.45 0.20 280);
+  --chart-5: oklch(0.35 0.15 320);
+
+  --background: oklch(0.12 0.02 260);
+  --foreground: oklch(0.95 0.02 60);
+
+  --card: oklch(0.18 0.04 260);
+  --card-foreground: oklch(0.95 0.02 60);
+
+  --popover: oklch(0.18 0.04 260);
+  --popover-foreground: oklch(0.95 0.02 60);
 }
 
+/* ===============================
+   BASE STYLES
+   =============================== */
 @layer base {
   * {
     border: 1px solid var(--border);
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
+
   body {
     background-color: var(--background);
     color: var(--foreground);
   }
+
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
   [type="button"]:not(:disabled),
@@ -119,6 +173,9 @@
   }
 }
 
+/* ===============================
+   COMPONENTS
+   =============================== */
 @layer components {
   .container {
     width: 100%;
@@ -133,7 +190,7 @@
     min-width: 0;
   }
 
-  /* VoltFlow AI - Neon Glow */
+  /* Neon Glow */
   .neon-glow {
     box-shadow: 0 0 20px oklch(0.65 0.25 330 / 0.3),
                 0 0 40px oklch(0.55 0.28 260 / 0.2);
@@ -175,7 +232,9 @@
   }
 }
 
-/* Global Typography */
+/* ===============================
+   TYPOGRAPHY
+   =============================== */
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
 
 html {
@@ -188,7 +247,9 @@ h1, h2, h3, h4, h5, h6 {
   letter-spacing: -0.02em;
 }
 
-/* Animations */
+/* ===============================
+   ANIMATIONS
+   =============================== */
 @keyframes float {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-10px); }
