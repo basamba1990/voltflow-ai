@@ -45,32 +45,25 @@
 
 :root {
   /* VoltFlow AI - Palette OKLCH Neon-Noir */
-  /* Accent Principal: Rose Vif (Neon Pink) */
   --primary: oklch(0.65 0.25 330);
   --primary-foreground: oklch(0.98 0.01 0);
-  
-  /* Accent Secondaire: Bleu Électrique */
+
   --secondary: oklch(0.55 0.28 260);
   --secondary-foreground: oklch(0.98 0.01 0);
-  
-  /* Accent Tertiaire: Bleu Marine Profond */
+
   --accent: oklch(0.25 0.08 260);
   --accent-foreground: oklch(0.95 0.02 60);
-  
-  /* Palette Neutre */
+
   --muted: oklch(0.35 0.05 260);
   --muted-foreground: oklch(0.75 0.05 60);
-  
-  /* Destructive */
+
   --destructive: oklch(0.65 0.25 25);
   --destructive-foreground: oklch(0.98 0.01 0);
-  
-  /* Borders & Input */
+
   --border: oklch(0.25 0.08 260 / 0.3);
   --input: oklch(0.25 0.08 260 / 0.2);
   --ring: oklch(0.65 0.25 330 / 0.5);
-  
-  /* Sidebar */
+
   --sidebar: oklch(0.15 0.05 260);
   --sidebar-foreground: oklch(0.95 0.02 60);
   --sidebar-primary: oklch(0.65 0.25 330);
@@ -79,72 +72,39 @@
   --sidebar-accent-foreground: oklch(0.98 0.01 0);
   --sidebar-border: oklch(0.25 0.08 260 / 0.3);
   --sidebar-ring: oklch(0.65 0.25 330 / 0.5);
-  
-  /* Charts */
+
   --chart-1: oklch(0.65 0.25 330);
   --chart-2: oklch(0.55 0.28 260);
   --chart-3: oklch(0.75 0.15 200);
   --chart-4: oklch(0.45 0.20 280);
   --chart-5: oklch(0.35 0.15 320);
-  
-  /* Radius */
+
   --radius: 0.65rem;
-  
-  /* Background & Foreground */
+
   --background: oklch(0.12 0.02 260);
   --foreground: oklch(0.95 0.02 60);
-  
-  /* Card */
+
   --card: oklch(0.18 0.04 260);
   --card-foreground: oklch(0.95 0.02 60);
-  
-  /* Popover */
+
   --popover: oklch(0.18 0.04 260);
   --popover-foreground: oklch(0.95 0.02 60);
 }
 
 .dark {
-  /* Dark theme (same as root for VoltFlow) */
-  --primary: oklch(0.65 0.25 330);
-  --primary-foreground: oklch(0.98 0.01 0);
-  --secondary: oklch(0.55 0.28 260);
-  --secondary-foreground: oklch(0.98 0.01 0);
-  --accent: oklch(0.25 0.08 260);
-  --accent-foreground: oklch(0.95 0.02 60);
-  --muted: oklch(0.35 0.05 260);
-  --muted-foreground: oklch(0.75 0.05 60);
-  --destructive: oklch(0.65 0.25 25);
-  --destructive-foreground: oklch(0.98 0.01 0);
-  --border: oklch(0.25 0.08 260 / 0.3);
-  --input: oklch(0.25 0.08 260 / 0.2);
-  --ring: oklch(0.65 0.25 330 / 0.5);
-  --chart-1: oklch(0.65 0.25 330);
-  --chart-2: oklch(0.55 0.28 260);
-  --chart-3: oklch(0.75 0.15 200);
-  --chart-4: oklch(0.45 0.20 280);
-  --chart-5: oklch(0.35 0.15 320);
-  --sidebar: oklch(0.15 0.05 260);
-  --sidebar-foreground: oklch(0.95 0.02 60);
-  --sidebar-primary: oklch(0.65 0.25 330);
-  --sidebar-primary-foreground: oklch(0.98 0.01 0);
-  --sidebar-accent: oklch(0.55 0.28 260);
-  --sidebar-accent-foreground: oklch(0.98 0.01 0);
-  --sidebar-border: oklch(0.25 0.08 260 / 0.3);
-  --sidebar-ring: oklch(0.65 0.25 330 / 0.5);
-  --background: oklch(0.12 0.02 260);
-  --foreground: oklch(0.95 0.02 60);
-  --card: oklch(0.18 0.04 260);
-  --card-foreground: oklch(0.95 0.02 60);
-  --popover: oklch(0.18 0.04 260);
-  --popover-foreground: oklch(0.95 0.02 60);
+  /* Dark theme same as root */
+  @apply dark;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    border: 1px solid var(--border);
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
   }
   body {
-    @apply bg-background text-foreground;
+    background-color: var(--background);
+    color: var(--foreground);
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
@@ -155,7 +115,7 @@
   select:not(:disabled),
   input[type="checkbox"]:not(:disabled),
   input[type="radio"]:not(:disabled) {
-    @apply cursor-pointer;
+    cursor: pointer;
   }
 }
 
@@ -173,30 +133,30 @@
     min-width: 0;
   }
 
-  /* VoltFlow AI - Custom Components */
-  
-  /* Neon Glow Effect */
+  /* VoltFlow AI - Neon Glow */
   .neon-glow {
-    box-shadow: 0 0 20px oklch(0.65 0.25 330 / 0.3), 
+    box-shadow: 0 0 20px oklch(0.65 0.25 330 / 0.3),
                 0 0 40px oklch(0.55 0.28 260 / 0.2);
   }
 
   /* Gradient Background */
   .gradient-neon {
-    background: linear-gradient(135deg, 
-      oklch(0.12 0.02 260) 0%, 
-      oklch(0.18 0.04 260) 50%, 
+    background: linear-gradient(135deg,
+      oklch(0.12 0.02 260) 0%,
+      oklch(0.18 0.04 260) 50%,
       oklch(0.15 0.05 260) 100%);
   }
 
   /* Glass Morphism */
   .glass-effect {
-    @apply backdrop-blur-md bg-white/10 border border-white/20;
+    backdrop-filter: blur(12px);
+    background-color: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.2);
   }
 
   /* Smooth Transitions */
   .transition-smooth {
-    @apply transition-all duration-300 ease-out;
+    transition: all 0.3s ease-out;
   }
 
   @media (min-width: 640px) {
@@ -215,7 +175,7 @@
   }
 }
 
-/* VoltFlow AI - Global Typography */
+/* Global Typography */
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
 
 html {
@@ -235,12 +195,12 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 @keyframes glow-pulse {
-  0%, 100% { 
-    box-shadow: 0 0 20px oklch(0.65 0.25 330 / 0.3), 
+  0%, 100% {
+    box-shadow: 0 0 20px oklch(0.65 0.25 330 / 0.3),
                 0 0 40px oklch(0.55 0.28 260 / 0.2);
   }
-  50% { 
-    box-shadow: 0 0 30px oklch(0.65 0.25 330 / 0.5), 
+  50% {
+    box-shadow: 0 0 30px oklch(0.65 0.25 330 / 0.5),
                 0 0 60px oklch(0.55 0.28 260 / 0.3);
   }
 }
