@@ -1,8 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { ArrowRight, Zap, Layers, BarChart3, Shield, Rocket, Users } from "lucide-react";
-import { useState } from "react";
+import { ArrowRight, Zap, Layers, BarChart3, Shield, Rocket, Users, Loader2 } from "lucide-react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
+import { useLocation } from "wouter";
 
 /**
  * VoltFlow AI - Landing Page
@@ -12,7 +13,17 @@ import { toast } from "sonner";
 
 export default function Home() {
   const [hoveredPlan, setHoveredPlan] = useState<string | null>(null);
-  const { signIn, loading } = useAuth();
+  const { user, signIn, loading: authLoading } = useAuth();
+  const [, setLocation] = useLocation();
+  const [isRedirecting, setIsRedirecting] = useState(false);
+
+  // Vérifier si l'utilisateur est déjà connecté
+  useEffect(() => {
+    if (user && !authLoading) {
+      // Rediriger vers le dashboard si déjà connecté
+      setLocation('/dashboard');
+    }
+  }, [user, authLoading, setLocation]);
 
   const plans = [
     {
@@ -107,11 +118,23 @@ export default function Home() {
 
   const handleSignIn = async () => {
     try {
-      await signIn()
-    } catch (error) {
-      toast.error('Erreur lors de la connexion')
+      setIsRedirecting(true);
+      await signIn('github');
+      // Note: signIn redirige automatiquement, donc ce code ne s'exécute qu'en cas d'erreur
+    } catch (error: any) {
+      setIsRedirecting(false);
+      console.error('Sign in error:', error);
+      
+      // Ne pas afficher de toast si l'erreur est liée à la redirection
+      if (!error.message.includes('redirect')) {
+        toast.error('Erreur lors de la connexion. Veuillez réessayer.');
+      }
     }
-  }
+  };
+
+  const handleDemo = () => {
+    toast.info('Version démo bientôt disponible!');
+  };
 
   return (
     <div className="min-h-screen bg-background text-foreground overflow-hidden">
@@ -135,10 +158,19 @@ export default function Home() {
           </div>
           <Button 
             onClick={handleSignIn}
-            disabled={loading}
-            className="bg-primary hover:bg-primary/90 text-primary-foreground"
+            disabled={authLoading || isRedirecting}
+            className="bg-primary hover:bg-primary/90 text-primary-foreground min-w-[120px]"
           >
-            {loading ? 'Connexion...' : 'Se connecter'}
+            {authLoading || isRedirecting ? (
+              <>
+                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                Connexion...
+              </>
+            ) : user ? (
+              'Connecté'
+            ) : (
+              'Se connecter'
+            )}
           </Button>
         </div>
       </nav>
@@ -177,16 +209,26 @@ export default function Home() {
               <Button
                 size="lg"
                 onClick={handleSignIn}
-                className="bg-primary hover:bg-primary/90 text-primary-foreground neon-glow"
-                disabled={loading}
+                className="bg-primary hover:bg-primary/90 text-primary-foreground neon-glow min-w-[200px]"
+                disabled={authLoading || isRedirecting}
               >
-                {loading ? 'Connexion...' : 'Démarrer Gratuitement'}
-                <ArrowRight className="w-4 h-4 ml-2" />
+                {authLoading || isRedirecting ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Connexion...
+                  </>
+                ) : (
+                  <>
+                    Démarrer Gratuitement
+                    <ArrowRight className="w-4 h-4 ml-2" />
+                  </>
+                )}
               </Button>
               <Button
                 size="lg"
                 variant="outline"
-                className="border-secondary text-secondary hover:bg-secondary/10"
+                className="border-secondary text-secondary hover:bg-secondary/10 min-w-[150px]"
+                onClick={handleDemo}
               >
                 Voir la Démo
               </Button>
@@ -292,9 +334,13 @@ export default function Home() {
                       : "bg-secondary hover:bg-secondary/90"
                   }`}
                   onClick={handleSignIn}
-                  disabled={loading}
+                  disabled={authLoading || isRedirecting}
                 >
-                  {plan.cta}
+                  {authLoading || isRedirecting ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    plan.cta
+                  )}
                 </Button>
 
                 <div className="space-y-3">
@@ -326,11 +372,20 @@ export default function Home() {
             <Button
               size="lg"
               onClick={handleSignIn}
-              disabled={loading}
-              className="bg-primary hover:bg-primary/90 text-primary-foreground"
+              disabled={authLoading || isRedirecting}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground min-w-[200px]"
             >
-              {loading ? 'Connexion...' : 'Commencer Maintenant'}
-              <ArrowRight className="w-4 h-4 ml-2" />
+              {authLoading || isRedirecting ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Connexion...
+                </>
+              ) : (
+                <>
+                  Commencer Maintenant
+                  <ArrowRight className="w-4 h-4 ml-2" />
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -379,6 +434,19 @@ export default function Home() {
           </div>
         </div>
       </footer>
+
+      {/* Chargement overlay */}
+      {(authLoading || isRedirecting) && (
+        <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="text-center">
+            <Loader2 className="w-12 h-12 text-primary animate-spin mx-auto mb-4" />
+            <p className="text-lg font-semibold">Connexion en cours...</p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Redirection vers GitHub pour l'authentification
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
