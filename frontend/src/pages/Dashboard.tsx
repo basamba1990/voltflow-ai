@@ -20,10 +20,12 @@ import {
   Zap,
   Clock,
   CheckCircle,
+  RefreshCw,
+  AlertCircle,
 } from "lucide-react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { getSimulations } from "@/lib/supabase";
+import { getSimulations, subscribeToSimulation, unsubscribeFromChannel } from "@/lib/supabase";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
@@ -37,6 +39,9 @@ export default function Dashboard() {
   const [, setLocation] = useLocation()
   const [simulations, setSimulations] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [realtimeChannels, setRealtimeChannels] = useState<any[]>([])
 
   const chartData = [
     { month: "Jan", simulations: 12, avgTime: 2.5 },
@@ -59,6 +64,7 @@ export default function Dashboard() {
       value: profile?.simulations_used || "0",
       icon: Zap,
       trend: "+12%",
+      limit: profile?.simulations_limit || 10,
     },
     {
       label: "Temps moyen",
@@ -80,22 +86,60 @@ export default function Dashboard() {
     },
   ];
 
-  useEffect(() => {
-    loadSimulations()
-  }, [])
-
-  const loadSimulations = async () => {
+  const loadSimulations = useCallback(async () => {
     try {
+      setError(null)
       setLoading(true)
       const data = await getSimulations({ limit: 5 })
       setSimulations(data)
-    } catch (error) {
+      
+      // Subscribe to real-time updates for running simulations
+      const runningSims = data.filter((sim: any) => 
+        sim.status === 'running' || sim.status === 'pending'
+      )
+      
+      // Clean up old channels
+      realtimeChannels.forEach(channel => unsubscribeFromChannel(channel))
+      
+      // Create new channels
+      const channels = runningSims.map((sim: any) => {
+        return subscribeToSimulation(sim.id, (payload) => {
+          setSimulations(prev => prev.map(s => 
+            s.id === payload.new.id ? { ...s, ...payload.new } : s
+          ))
+        })
+      })
+      
+      setRealtimeChannels(channels)
+      
+    } catch (error: any) {
       console.error('Error loading simulations:', error)
-      toast.error('Erreur lors du chargement des simulations')
+      setError(error.message)
+      
+      if (error.message.includes('NetworkError')) {
+        toast.error('Problème de connexion. Vérifiez votre réseau.')
+      } else if (error.message.includes('JWT')) {
+        toast.error('Session expirée. Redirection...')
+        setTimeout(() => signOut(), 2000)
+      } else {
+        toast.error('Erreur lors du chargement des simulations')
+      }
+      
+      setSimulations([])
     } finally {
       setLoading(false)
+      setRefreshing(false)
     }
-  }
+  }, [realtimeChannels, signOut])
+
+  useEffect(() => {
+    loadSimulations()
+    
+    return () => {
+      // Cleanup realtime subscriptions
+      realtimeChannels.forEach(channel => unsubscribeFromChannel(channel))
+    }
+  }, [])
 
   const handleSignOut = async () => {
     try {
@@ -109,6 +153,72 @@ export default function Dashboard() {
   const handleNewSimulation = () => {
     setLocation('/simulation/new')
   }
+
+  const handleRefresh = () => {
+    setRefreshing(true)
+    loadSimulations()
+  }
+
+  const SimulationSkeleton = () => (
+    <div className="space-y-4">
+      {[...Array(3)].map((_, i) => (
+        <div key={i} className="p-4 rounded-lg bg-background border border-border animate-pulse">
+          <div className="flex items-center justify-between mb-2">
+            <div className="h-4 bg-gray-700 rounded w-1/4"></div>
+            <div className="h-3 bg-gray-800 rounded w-1/6"></div>
+          </div>
+          <div className="space-y-2">
+            <div className="h-2 bg-gray-800 rounded w-full"></div>
+            <div className="h-2 bg-gray-800 rounded w-5/6"></div>
+          </div>
+          <div className="mt-3 w-full bg-gray-800 rounded-full h-2">
+            <div className="h-full bg-gray-700 rounded-full w-1/4"></div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+
+  const ErrorState = () => (
+    <div className="text-center py-8">
+      <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-red-500/10 flex items-center justify-center">
+        <AlertCircle className="w-6 h-6 text-red-500" />
+      </div>
+      <h4 className="font-semibold mb-2">Erreur de chargement</h4>
+      <p className="text-sm text-muted-foreground mb-4">
+        {error || 'Impossible de charger les simulations'}
+      </p>
+      <Button 
+        variant="outline" 
+        size="sm"
+        onClick={handleRefresh}
+        disabled={refreshing}
+      >
+        <RefreshCw className={`w-4 h-4 mr-2 ${refreshing ? 'animate-spin' : ''}`} />
+        Réessayer
+      </Button>
+    </div>
+  )
+
+  const EmptyState = () => (
+    <div className="text-center py-8">
+      <div className="w-12 h-12 mx-auto mb-4 rounded-full bg-primary/10 flex items-center justify-center">
+        <Zap className="w-6 h-6 text-primary" />
+      </div>
+      <h4 className="font-semibold mb-2">Aucune simulation</h4>
+      <p className="text-sm text-muted-foreground mb-4">
+        Commencez votre première simulation thermique
+      </p>
+      <Button 
+        variant="outline" 
+        size="sm"
+        onClick={handleNewSimulation}
+      >
+        <Plus className="w-4 h-4 mr-2" />
+        Créer une simulation
+      </Button>
+    </div>
+  )
 
   return (
     <div className="min-h-screen bg-background text-foreground">
@@ -131,17 +241,19 @@ export default function Dashboard() {
             <Button 
               onClick={handleNewSimulation}
               className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2"
+              disabled={loading}
             >
               <Plus className="w-4 h-4" />
               Nouvelle Simulation
             </Button>
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" disabled={loading}>
               <Settings className="w-5 h-5" />
             </Button>
             <Button 
               variant="ghost" 
               size="icon"
               onClick={handleSignOut}
+              disabled={loading}
             >
               <LogOut className="w-5 h-5" />
             </Button>
@@ -165,6 +277,9 @@ export default function Dashboard() {
         <div className="grid md:grid-cols-4 gap-4 mb-8">
           {stats.map((stat, idx) => {
             const Icon = stat.icon;
+            const usagePercentage = stat.limit ? 
+              Math.round((Number(stat.value) / stat.limit) * 100) : 0;
+            
             return (
               <div
                 key={idx}
@@ -174,12 +289,25 @@ export default function Dashboard() {
                   <div className="p-2 rounded-lg bg-primary/20">
                     <Icon className="w-5 h-5 text-primary" />
                   </div>
-                  <span className="text-xs font-semibold text-primary">
+                  <span className={`text-xs font-semibold ${
+                    stat.trend.startsWith('+') ? 'text-green-500' : 'text-red-500'
+                  }`}>
                     {stat.trend}
                   </span>
                 </div>
                 <div className="text-2xl font-bold mb-1">{stat.value}</div>
                 <p className="text-xs text-muted-foreground">{stat.label}</p>
+                
+                {stat.limit && (
+                  <div className="mt-3 w-full bg-background rounded-full h-1 overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-500 ${
+                        usagePercentage > 80 ? 'bg-red-500' : 'bg-primary'
+                      }`}
+                      style={{ width: `${Math.min(usagePercentage, 100)}%` }}
+                    />
+                  </div>
+                )}
               </div>
             );
           })}
@@ -258,29 +386,54 @@ export default function Dashboard() {
         <div className="p-6 rounded-xl bg-card border border-border">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold">Simulations Récentes</h3>
-            <Button 
-              variant="ghost" 
-              size="sm"
-              onClick={loadSimulations}
-            >
-              {loading ? 'Chargement...' : 'Actualiser'}
-            </Button>
+            <div className="flex items-center gap-2">
+              {refreshing && (
+                <span className="text-xs text-muted-foreground">
+                  Actualisation...
+                </span>
+              )}
+              <Button 
+                variant="ghost" 
+                size="sm"
+                onClick={handleRefresh}
+                disabled={refreshing || loading}
+              >
+                <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              </Button>
+            </div>
           </div>
 
           <div className="space-y-4">
-            {simulations.length === 0 ? (
-              <div className="text-center py-8 text-muted-foreground">
-                Aucune simulation pour le moment
-              </div>
+            {loading ? (
+              <SimulationSkeleton />
+            ) : error ? (
+              <ErrorState />
+            ) : simulations.length === 0 ? (
+              <EmptyState />
             ) : (
               simulations.map((sim) => (
                 <div
                   key={sim.id}
-                  className="p-4 rounded-lg bg-background border border-border hover:border-primary/50 transition-smooth flex items-center justify-between cursor-pointer"
+                  className="p-4 rounded-lg bg-background border border-border hover:border-primary/50 transition-smooth flex items-center justify-between cursor-pointer group"
                   onClick={() => setLocation(`/simulation/${sim.id}`)}
                 >
                   <div className="flex-1">
-                    <h4 className="font-semibold mb-2">{sim.name}</h4>
+                    <div className="flex items-center gap-3 mb-2">
+                      <h4 className="font-semibold group-hover:text-primary transition-smooth">
+                        {sim.name}
+                      </h4>
+                      <span className={`text-xs px-2 py-1 rounded-full capitalize ${
+                        sim.status === 'completed' 
+                          ? 'bg-green-500/10 text-green-500' 
+                          : sim.status === 'running'
+                          ? 'bg-blue-500/10 text-blue-500'
+                          : 'bg-yellow-500/10 text-yellow-500'
+                      }`}>
+                        {sim.status === 'completed' ? 'Terminée' : 
+                         sim.status === 'running' ? 'En cours' : 
+                         sim.status === 'failed' ? 'Échouée' : 'En attente'}
+                      </span>
+                    </div>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
                       <span>{new Date(sim.created_at).toLocaleDateString()}</span>
                       <span>Durée: {sim.status === 'completed' ? 'Terminée' : 'En cours'}</span>
@@ -291,6 +444,8 @@ export default function Dashboard() {
                         className={`h-full transition-all duration-500 ${
                           sim.status === "completed"
                             ? "bg-primary"
+                            : sim.status === "running"
+                            ? "bg-blue-500"
                             : "bg-secondary"
                         }`}
                         style={{ width: `${sim.progress}%` }}
@@ -302,7 +457,9 @@ export default function Dashboard() {
                       {sim.progress}%
                     </div>
                     <span className="text-xs text-muted-foreground capitalize">
-                      {sim.status === "completed" ? "Terminée" : "En cours"}
+                      {sim.status === "completed" ? "Terminée" : 
+                       sim.status === "running" ? "En cours" : 
+                       sim.status === "failed" ? "Échouée" : "En attente"}
                     </span>
                   </div>
                 </div>
