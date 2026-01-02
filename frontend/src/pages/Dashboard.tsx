@@ -1,6 +1,4 @@
 // FICHIER CORRIGÉ : frontend/src/pages/Dashboard.tsx
-// Import corrigé vers le service
-
 import { Button } from "@/components/ui/button";
 import {
   LineChart,
@@ -26,17 +24,14 @@ import {
   RefreshCw,
   AlertCircle,
 } from "lucide-react";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-
-// CORRECTION CRITIQUE : Import depuis le service, pas depuis lib/supabase
 import { 
   getSimulations, 
   subscribeToSimulation, 
   unsubscribeFromChannel,
   type Simulation 
 } from "@/services/simulation.service";
-
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 
@@ -51,7 +46,7 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [realtimeChannels, setRealtimeChannels] = useState<any[]>([]);
+  const realtimeChannelsRef = useRef<any[]>([]);
 
   const chartData = [
     { month: "Jan", simulations: 12, avgTime: 2.5 },
@@ -71,7 +66,7 @@ export default function Dashboard() {
   const stats = [
     {
       label: "Simulations ce mois",
-      value: profile?.simulations_used || "0",
+      value: profile?.simulations_used?.toString() || "0",
       icon: Zap,
       trend: "+12%",
       limit: profile?.simulations_limit || 10,
@@ -97,11 +92,18 @@ export default function Dashboard() {
   ];
 
   const loadSimulations = useCallback(async () => {
+    // CORRECTION : Ne pas charger si utilisateur non connecté
+    if (!user) {
+      setLoading(false);
+      setRefreshing(false);
+      setError('Veuillez vous connecter pour voir vos simulations');
+      return;
+    }
+
     try {
       setError(null);
       setLoading(true);
       
-      // Appel CORRECT vers la fonction exportée du service
       const data = await getSimulations({ limit: 5 });
       setSimulations(data);
 
@@ -111,7 +113,7 @@ export default function Dashboard() {
       );
       
       // Clean up old channels
-      realtimeChannels.forEach(channel => unsubscribeFromChannel(channel));
+      realtimeChannelsRef.current.forEach(channel => unsubscribeFromChannel(channel));
       
       // Create new channels
       const channels = runningSims.map((sim: Simulation) => {
@@ -122,16 +124,18 @@ export default function Dashboard() {
         });
       });
       
-      setRealtimeChannels(channels);
+      realtimeChannelsRef.current = channels;
     } catch (error: any) {
       console.error('❌ Erreur loadSimulations:', error);
       setError(error.message);
       
-      if (error.message.includes('NetworkError')) {
+      if (error.message.includes('NetworkError') || error.message.includes('fetch')) {
         toast.error('Problème de connexion. Vérifiez votre réseau.');
-      } else if (error.message.includes('JWT')) {
+      } else if (error.message.includes('JWT') || error.message.includes('401')) {
         toast.error('Session expirée. Redirection...');
         setTimeout(() => signOut(), 2000);
+      } else if (error.message.includes('PGRST116') || error.message.includes('42P01')) {
+        toast.error('Table de simulations non disponible. Contactez le support.');
       } else {
         toast.error('Erreur lors du chargement des simulations');
       }
@@ -140,31 +144,47 @@ export default function Dashboard() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [realtimeChannels, signOut]);
+  }, [user, signOut]);
 
+  // CORRECTION : Charger seulement si utilisateur connecté
   useEffect(() => {
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+    
     loadSimulations();
 
     return () => {
       // Cleanup realtime subscriptions
-      realtimeChannels.forEach(channel => unsubscribeFromChannel(channel));
+      realtimeChannelsRef.current.forEach(channel => unsubscribeFromChannel(channel));
     };
-  }, []);
+  }, [user, loadSimulations]);
 
   const handleSignOut = async () => {
     try {
       await signOut();
       toast.success('Déconnexion réussie');
+      setLocation('/');
     } catch (error) {
       toast.error('Erreur lors de la déconnexion');
     }
   };
 
   const handleNewSimulation = () => {
+    if (!user) {
+      toast.error('Veuillez vous connecter pour créer une simulation');
+      setLocation('/login');
+      return;
+    }
     setLocation('/simulation/new');
   };
 
   const handleRefresh = () => {
+    if (!user) {
+      toast.error('Veuillez vous connecter pour actualiser');
+      return;
+    }
     setRefreshing(true);
     loadSimulations();
   };
@@ -220,9 +240,26 @@ export default function Dashboard() {
     </div>
   );
 
+  // CORRECTION : État non connecté
+  if (!user && !loading) {
+    return (
+      <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
+        <div className="text-center p-8">
+          <AlertCircle className="w-16 h-16 text-primary mx-auto mb-4" />
+          <h2 className="text-2xl font-bold mb-4">Non connecté</h2>
+          <p className="text-muted-foreground mb-6">
+            Veuillez vous connecter pour accéder au dashboard
+          </p>
+          <Button onClick={() => setLocation('/login')}>
+            Se connecter
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
-      {/* Header */}
       <header className="border-b border-border">
         <div className="container mx-auto px-4 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -261,12 +298,10 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="container mx-auto px-4 py-8">
-        {/* Welcome Section */}
         <div className="mb-8 p-6 rounded-xl bg-gradient-to-r from-primary/20 via-secondary/20 to-primary/20 border border-primary/30">
           <h2 className="text-2xl font-bold mb-2">
-            Bienvenue, {profile?.full_name || 'Ingénieur'}!
+            Bienvenue, {profile?.full_name || user?.email?.split('@')[0] || 'Ingénieur'}!
           </h2>
           <p className="text-muted-foreground">
             Vous avez {profile?.simulations_used || 0} simulations ce mois sur{' '}
@@ -274,7 +309,6 @@ export default function Dashboard() {
           </p>
         </div>
 
-        {/* Stats Grid */}
         <div className="grid md:grid-cols-4 gap-4 mb-8">
           {stats.map((stat, idx) => {
             const Icon = stat.icon;
@@ -317,9 +351,7 @@ export default function Dashboard() {
           })}
         </div>
 
-        {/* Charts Section */}
         <div className="grid lg:grid-cols-3 gap-8 mb-8">
-          {/* Line Chart */}
           <div className="lg:col-span-2 p-6 rounded-xl bg-card border border-border">
             <h3 className="text-lg font-semibold mb-6">
               Tendance des Simulations
@@ -360,7 +392,6 @@ export default function Dashboard() {
             </ResponsiveContainer>
           </div>
 
-          {/* Pie Chart */}
           <div className="p-6 rounded-xl bg-card border border-border">
             <h3 className="text-lg font-semibold mb-6">
               Distribution par Type
@@ -393,7 +424,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Recent Simulations */}
         <div className="p-6 rounded-xl bg-card border border-border">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold">Simulations Récentes</h3>
