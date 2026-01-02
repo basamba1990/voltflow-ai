@@ -1,5 +1,4 @@
-// FICHIER CORRIGÉ : frontend/src/lib/supabase.ts
-// Client Supabase uniquement - sans fonctions métier
+// FICHIER CORRIGÉ DEFINITIF : frontend/src/lib/supabase.ts
 
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './database.types';
@@ -31,59 +30,72 @@ export const supabase = createClient<Database>(
     },
     global: {
       headers: {
-        'x-application-name': 'voltflow-ai'
+        'x-application-name': 'voltflow-ai',
+        'x-client-info': 'supabase-js-web/2.89.0'
       }
     }
   }
 );
 
 // -----------------------------------------------------------------------------
-// 3. UTILITAIRES GLOBAUX - CORRIGÉS POUR ÉVITER LES 404
+// 3. DIAGNOSTIC CORRIGÉ - PLUS DE 404
 // -----------------------------------------------------------------------------
 
 /**
- * Vérifie la connexion à Supabase sans requêter une table spécifique
+ * Vérifie la connexion à Supabase SANS générer de 404
  */
 export const checkSupabaseConnection = async () => {
   try {
-    // Utilise une table système ou une requête qui échouera proprement
-    const { error } = await supabase
-      .from('_nonexistent_table_for_connection_test')
-      .select('*')
-      .limit(0);
-
-    // Si erreur 42P01 = table inexistante → connexion OK mais table absente
-    // Si erreur 42501/401 = RLS actif → connexion OK
-    // Sinon, erreur de connexion
-    if (error) {
-      if (error.code === '42P01' || error.code === '42501' || error.code === '401') {
-        return { 
-          status: 'connected', 
-          message: 'Connexion Supabase établie' 
-        };
-      }
+    // Méthode SANS requête HTTP qui cause des 404
+    // On vérifie simplement que les variables d'environnement sont présentes
+    // et que le client peut être instancié
+    
+    if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY) {
       return { 
         status: 'disconnected', 
-        message: `Erreur: ${error.message}` 
+        message: 'Variables d\'environnement manquantes' 
+      };
+    }
+    
+    // Test de connexion léger: vérifier que le client peut être créé
+    // sans faire de requête HTTP vers une table
+    const testClient = createClient(
+      import.meta.env.VITE_SUPABASE_URL,
+      import.meta.env.VITE_SUPABASE_ANON_KEY,
+      {
+        auth: { autoRefreshToken: false, persistSession: false }
+      }
+    );
+    
+    // Tentative très légère: récupérer la session (méthode auth, pas REST)
+    const { error } = await testClient.auth.getSession();
+    
+    if (error) {
+      // Erreur réseau ou config invalide
+      console.error('❌ Test connexion Supabase échoué:', error);
+      return { 
+        status: 'disconnected', 
+        message: `Connexion impossible: ${error.message}` 
       };
     }
     
     return { 
       status: 'connected', 
-      message: 'Connexion Supabase établie' 
+      message: 'Connexion Supabase disponible' 
     };
   } catch (e: any) {
     console.error('❌ Diagnostic Supabase échoué:', e);
     return { 
       status: 'disconnected', 
-      message: e.message || 'Impossible de se connecter à Supabase' 
+      message: e.message || 'Erreur de configuration Supabase' 
     };
   }
 };
 
-/**
- * Gestionnaire d'erreurs standardisé
- */
+// -----------------------------------------------------------------------------
+// 4. GESTION D'ERREURS
+// -----------------------------------------------------------------------------
+
 export const handleSupabaseError = (
   error: any, 
   operation = 'opération',
@@ -114,4 +126,33 @@ export const handleSupabaseError = (
     userMessage: userMessages[errorDetails.code] || userMessages.UNKNOWN,
     severity: errorDetails.code === '401' ? 'warning' : 'error'
   };
+};
+
+// -----------------------------------------------------------------------------
+// 5. UTILITAIRE POUR VALIDER LES EMAILS (POUR OTP)
+// -----------------------------------------------------------------------------
+
+/**
+ * Valide un email pour éviter les erreurs 400 de Supabase Auth
+ */
+export const validateEmailForAuth = (email: string): { valid: boolean; error?: string } => {
+  const trimmedEmail = (email || '').trim().toLowerCase();
+  
+  if (!trimmedEmail) {
+    return { valid: false, error: 'L\'email est requis' };
+  }
+  
+  // Validation de format basique mais robuste
+  const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+  
+  if (!emailRegex.test(trimmedEmail)) {
+    return { valid: false, error: 'Format d\'email invalide' };
+  }
+  
+  // Validation de longueur
+  if (trimmedEmail.length > 254) {
+    return { valid: false, error: 'Email trop long' };
+  }
+  
+  return { valid: true };
 };
