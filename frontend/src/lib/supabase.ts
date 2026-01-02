@@ -46,10 +46,6 @@ export const supabase = createClient<Database>(
  */
 export const checkSupabaseConnection = async () => {
   try {
-    // Méthode SANS requête HTTP qui cause des 404
-    // On vérifie simplement que les variables d'environnement sont présentes
-    // et que le client peut être instancié
-    
     if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY) {
       return { 
         status: 'disconnected', 
@@ -58,7 +54,6 @@ export const checkSupabaseConnection = async () => {
     }
     
     // Test de connexion léger: vérifier que le client peut être créé
-    // sans faire de requête HTTP vers une table
     const testClient = createClient(
       import.meta.env.VITE_SUPABASE_URL,
       import.meta.env.VITE_SUPABASE_ANON_KEY,
@@ -71,7 +66,6 @@ export const checkSupabaseConnection = async () => {
     const { error } = await testClient.auth.getSession();
     
     if (error) {
-      // Erreur réseau ou config invalide
       console.error('❌ Test connexion Supabase échoué:', error);
       return { 
         status: 'disconnected', 
