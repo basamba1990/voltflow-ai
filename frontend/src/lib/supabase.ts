@@ -38,36 +38,45 @@ export const supabase = createClient<Database>(
 );
 
 // -----------------------------------------------------------------------------
-// 3. UTILITAIRES GLOBAUX (optionnels mais recommandés)
+// 3. UTILITAIRES GLOBAUX - CORRIGÉS POUR ÉVITER LES 404
 // -----------------------------------------------------------------------------
 
 /**
- * Vérifie la connexion à Supabase
+ * Vérifie la connexion à Supabase sans requêter une table spécifique
  */
 export const checkSupabaseConnection = async () => {
   try {
-    const { data, error } = await supabase.from('profiles').select('count').limit(1);
-    
+    // Utilise une table système ou une requête qui échouera proprement
+    const { error } = await supabase
+      .from('_nonexistent_table_for_connection_test')
+      .select('*')
+      .limit(0);
+
+    // Si erreur 42P01 = table inexistante → connexion OK mais table absente
+    // Si erreur 42501/401 = RLS actif → connexion OK
+    // Sinon, erreur de connexion
     if (error) {
-      // Erreur de permission = RLS actif mais connexion OK
-      if (error.code === '42501' || error.code === '401') {
+      if (error.code === '42P01' || error.code === '42501' || error.code === '401') {
         return { 
           status: 'connected', 
-          message: 'Connexion établie (RLS actif)' 
+          message: 'Connexion Supabase établie' 
         };
       }
-      throw error;
+      return { 
+        status: 'disconnected', 
+        message: `Erreur: ${error.message}` 
+      };
     }
     
     return { 
       status: 'connected', 
       message: 'Connexion Supabase établie' 
     };
-  } catch (error: any) {
-    console.error('❌ Diagnostic Supabase échoué:', error);
+  } catch (e: any) {
+    console.error('❌ Diagnostic Supabase échoué:', e);
     return { 
       status: 'disconnected', 
-      message: error.message || 'Erreur réseau' 
+      message: e.message || 'Impossible de se connecter à Supabase' 
     };
   }
 };
@@ -90,7 +99,6 @@ export const handleSupabaseError = (
   
   console.error(`❌ Erreur Supabase (${operation}):`, errorDetails);
   
-  // Messages utilisateur selon le code d'erreur
   const userMessages: Record<string, string> = {
     'PGRST116': 'Aucune donnée trouvée',
     '42501': 'Permission refusée',
