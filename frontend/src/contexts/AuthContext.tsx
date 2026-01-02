@@ -1,323 +1,178 @@
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { supabase } from '@/lib/supabase'
-import type { User, Session } from '@supabase/supabase-js'
-import { toast } from 'sonner'
+// FICHIER CORRIGÉ : frontend/src/contexts/AuthContext.tsx
+// Basé sur l'architecture robuste de SmooveBox v2
+import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
+import { supabase } from '../lib/supabase';
+import { Session } from '@supabase/supabase-js';
+import { Database } from '../lib/database.types';
 
+// Définir les types pour le profil utilisateur
+type Profile = Database['public']['Tables']['users']['Row'];
+
+// Définir le type pour le contexte d'authentification
 interface AuthContextType {
-  user: User | null
-  session: Session | null
-  profile: any | null
-  loading: boolean
-  signIn: (provider?: 'github' | 'google') => Promise<void>
-  signOut: () => Promise<void>
-  refreshProfile: () => Promise<void>
-  updateProfile: (data: Partial<any>) => Promise<void>
+  user: Session['user'] | null;
+  profile: Profile | null;
+  loading: boolean;
+  error: string | null;
+  signIn: (email: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  updateUserProfile: (updates: Partial<Profile>) => Promise<Profile | null>;
 }
 
-const AuthContext = createContext<AuthContextType>({
-  user: null,
-  session: null,
-  profile: null,
-  loading: true,
-  signIn: async () => {},
-  signOut: async () => {},
-  refreshProfile: async () => {},
-  updateProfile: async () => {},
-})
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const useAuth = () => {
-  const context = useContext(AuthContext)
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider')
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error('useAuth must be used within an AuthProvider');
   }
-  return context
-}
+  return context;
+};
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
-  const [session, setSession] = useState<Session | null>(null)
-  const [profile, setProfile] = useState<any | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [initialized, setInitialized] = useState(false)
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [session, setSession] = useState<Session | null>(null);
+  const [user, setUser] = useState<Session['user'] | null>(null);
+  const [profile, setProfile] = useState<Profile | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // Fonction pour obtenir l'URL de redirection dynamique
-  const getRedirectUrl = () => {
-    if (typeof window === 'undefined') return ''
-    
-    // En production, utilisez l'URL actuelle
-    const currentUrl = window.location.origin
-    console.log('Current URL for redirect:', currentUrl)
-    
-    // Ajoute /dashboard à la fin
-    return `${currentUrl}/dashboard`
-  }
+  // Fonction pour créer un profil utilisateur (similaire à SmooveBox)
+  const createUserProfile = async (userData: Session['user']): Promise<Profile> => {
+    const profileData: Profile = {
+      id: userData.id,
+      email: userData.email || '',
+      full_name: userData.user_metadata?.full_name || null,
+      avatar_url: userData.user_metadata?.avatar_url || null,
+      role: 'user',
+      subscription_plan: 'free',
+      simulations_used: 0,
+      simulations_limit: 5,
+      stripe_customer_id: null,
+      stripe_subscription_id: null,
+      subscription_status: 'active',
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
 
-  const fetchUserProfile = useCallback(async (userId: string) => {
-    try {
-      console.log('Fetching profile for user:', userId)
+    const { error: profileError } = await supabase
+      .from('users')
+      .insert(profileData as any); // Utiliser 'as any' pour les types complexes
       
-      const { data, error } = await supabase
+    if (profileError && profileError.code !== '23505') { // 23505 = duplicate key (déjà créé)
+      console.error('Erreur création profil:', profileError);
+      throw profileError;
+    }
+    return profileData;
+  };
+
+  // Récupérer ou créer le profil utilisateur
+  const fetchUserProfile = async (userData: Session['user']): Promise<Profile | null> => {
+    if (!userData.id) return null;
+    try {
+      const { data: existingProfile, error: profileError } = await supabase
         .from('users')
         .select('*')
-        .eq('id', userId)
-        .single()
+        .eq('id', userData.id)
+        .single();
 
-      if (error) {
-        if (error.code === 'PGRST116') {
-          // User doesn't exist in our database yet, create profile
-          console.log('User profile not found, creating...')
-          return await createUserProfile(userId)
-        }
-        console.error('Error fetching profile:', error)
-        throw error
+      if (profileError && profileError.code !== 'PGRST116') {
+        console.error('Erreur récupération profil:', profileError);
       }
 
-      console.log('Profile fetched successfully:', data)
-      setProfile(data)
-      return data
-    } catch (error: any) {
-      console.error('Error in fetchUserProfile:', error)
-      toast.error('Failed to load user profile')
-      throw error
+      if (!existingProfile) {
+        return await createUserProfile(userData);
+      }
+      return existingProfile;
+    } catch (e) {
+      console.error('Erreur lors du fetch/création du profil:', e);
+      return null;
     }
-  }, [])
+  };
 
-  const createUserProfile = async (userId: string) => {
+  // Mise à jour du profil
+  const updateUserProfile = useCallback(async (updates: Partial<Profile>): Promise<Profile | null> => {
     try {
-      console.log('Creating user profile for:', userId)
-      
-      const { data: { user: authUser } } = await supabase.auth.getUser()
-      if (!authUser) throw new Error('No authenticated user found')
-
+      if (!user?.id) throw new Error('Utilisateur non connecté');
       const { data, error } = await supabase
         .from('users')
-        .insert({
-          id: userId,
-          email: authUser.email || '',
-          full_name: authUser.user_metadata?.full_name || 
-                    authUser.user_metadata?.user_name || 
-                    authUser.email?.split('@')[0] || 
-                    'User',
-          avatar_url: authUser.user_metadata?.avatar_url || 
-                     authUser.user_metadata?.picture,
-          role: 'user',
-          subscription_plan: 'starter',
-          subscription_status: 'active',
-          simulations_used: 0,
-          simulations_limit: 10,
+        .update({
+          ...updates,
+          updated_at: new Date().toISOString()
         })
-        .select()
-        .single()
-
-      if (error) {
-        console.error('Error creating user profile:', error)
-        throw error
-      }
-
-      console.log('User profile created:', data)
-      setProfile(data)
-      return data
-    } catch (error: any) {
-      console.error('Error in createUserProfile:', error)
-      throw error
-    }
-  }
-
-  const initializeAuth = useCallback(async () => {
-    try {
-      setLoading(true)
-      console.log('Initializing auth...')
-
-      // First, check for OAuth errors in URL
-      const urlParams = new URLSearchParams(window.location.search)
-      const error = urlParams.get('error')
-      const errorDescription = urlParams.get('error_description')
-
-      if (error) {
-        console.error('OAuth error from URL:', error, errorDescription)
-        toast.error(`Authentication error: ${errorDescription || error}`)
-        
-        // Clean URL
-        window.history.replaceState({}, document.title, window.location.pathname)
-      }
-
-      // Get current session
-      const { data: { session: initialSession }, error: sessionError } = await supabase.auth.getSession()
-      
-      if (sessionError) {
-        console.error('Session error:', sessionError)
-        setLoading(false)
-        return
-      }
-
-      console.log('Initial session:', initialSession)
-      setSession(initialSession)
-      setUser(initialSession?.user ?? null)
-
-      if (initialSession?.user) {
-        console.log('User found, fetching profile...')
-        await fetchUserProfile(initialSession.user.id)
-      } else {
-        console.log('No user found')
-        setProfile(null)
-      }
-
-      // Listen for auth changes
-      const { data: { subscription } } = supabase.auth.onAuthStateChange(
-        async (event, newSession) => {
-          console.log('Auth state changed:', event, newSession?.user?.id)
-          
-          setSession(newSession)
-          setUser(newSession?.user ?? null)
-
-          if (newSession?.user) {
-            console.log('New user authenticated, fetching profile...')
-            await fetchUserProfile(newSession.user.id)
-          } else {
-            console.log('User signed out, clearing profile')
-            setProfile(null)
-          }
-
-          setLoading(false)
-        }
-      )
-
-      setInitialized(true)
-      setLoading(false)
-
-      return () => {
-        subscription.unsubscribe()
-      }
-      
-    } catch (error) {
-      console.error('Auth initialization error:', error)
-      toast.error('Authentication system error')
-      setLoading(false)
-    }
-  }, [fetchUserProfile])
-
-  useEffect(() => {
-    if (!initialized) {
-      initializeAuth()
-    }
-  }, [initialized, initializeAuth])
-
-  const signIn = async (provider: 'github' | 'google' = 'github') => {
-    try {
-      setLoading(true)
-      console.log(`Signing in with ${provider}...`)
-      
-      const redirectUrl = getRedirectUrl()
-      console.log('Redirect URL:', redirectUrl)
-
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo: redirectUrl,
-          scopes: provider === 'github' ? 'read:user user:email' : undefined,
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-        },
-      })
-
-      if (error) {
-        console.error('Sign in error:', error)
-        throw error
-      }
-
-      // Note: signInWithOAuth will redirect the user, so code after this won't run
-      // until the user returns from OAuth provider
-      
-    } catch (error: any) {
-      console.error('Sign in failed:', error)
-      
-      let errorMessage = 'Sign in failed'
-      if (error.message.includes('popup')) {
-        errorMessage = 'Please disable popup blocker for this site'
-      } else if (error.message.includes('network')) {
-        errorMessage = 'Network error. Please check your connection'
-      } else if (error.message.includes('configuration')) {
-        errorMessage = 'Authentication not configured. Please contact support'
-      }
-      
-      toast.error(errorMessage)
-      throw error
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const signOut = async () => {
-    try {
-      setLoading(true)
-      console.log('Signing out...')
-      
-      const { error } = await supabase.auth.signOut()
-      
-      if (error) throw error
-
-      setUser(null)
-      setSession(null)
-      setProfile(null)
-      
-      toast.success('Logged out successfully')
-      
-      // Redirect to home
-      window.location.href = '/'
-    } catch (error: any) {
-      console.error('Sign out error:', error)
-      toast.error(`Logout failed: ${error.message}`)
-      throw error
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const refreshProfile = async () => {
-    if (user) {
-      await fetchUserProfile(user.id)
-    }
-  }
-
-  const updateProfile = async (data: Partial<any>) => {
-    if (!user) throw new Error('Not authenticated')
-
-    try {
-      const { data: updatedProfile, error } = await supabase
-        .from('users')
-        .update(data)
         .eq('id', user.id)
         .select()
-        .single()
-
-      if (error) throw error
+        .single();
       
-      setProfile(updatedProfile)
-      toast.success('Profile updated successfully')
-      return updatedProfile
-    } catch (error: any) {
-      console.error('Update profile error:', error)
-      toast.error(`Failed to update profile: ${error.message}`)
-      throw error
+      if (error) throw error;
+      setProfile(data as Profile);
+      return data as Profile;
+    } catch (e) {
+      console.error('Erreur mise à jour profil:', e);
+      setError('Échec de la mise à jour du profil.');
+      return null;
     }
-  }
+  }, [user]);
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user,
-        session,
-        profile,
-        loading,
-        signIn,
-        signOut,
-        refreshProfile,
-        updateProfile,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  )
-}
+  // Écouteur d'état d'authentification
+  useEffect(() => {
+    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        const userProfile = await fetchUserProfile(session.user);
+        setProfile(userProfile);
+      } else {
+        setProfile(null);
+      }
+      setLoading(false);
+    });
+
+    // Récupération initiale de la session
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        const userProfile = await fetchUserProfile(session.user);
+        setProfile(userProfile);
+      }
+      setLoading(false);
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  // Fonctions d'authentification
+  const signIn = useCallback(async (email: string) => {
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOtp({ email });
+    setLoading(false);
+    if (error) {
+      setError(error.message);
+      throw error;
+    }
+  }, []);
+
+  const signOut = useCallback(async () => {
+    setLoading(true);
+    const { error } = await supabase.auth.signOut();
+    setLoading(false);
+    if (error) {
+      setError(error.message);
+      throw error;
+    }
+  }, []);
+
+  const value = useMemo(() => ({
+    user,
+    profile,
+    loading,
+    error,
+    signIn,
+    signOut,
+    updateUserProfile,
+  }), [user, profile, loading, error, signIn, signOut, updateUserProfile]);
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};
