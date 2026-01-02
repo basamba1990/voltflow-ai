@@ -1,296 +1,116 @@
-import { createClient } from '@supabase/supabase-js'
-import type { Database } from './database.types'
+// FICHIER CORRIGÉ : frontend/src/lib/supabase.ts
+// Basé sur l'architecture robuste de SmooveBox v2
+import { createClient } from '@supabase/supabase-js';
+import { Database } from './database.types';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || 'https://placeholder.supabase.co'
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || 'placeholder'
+// -----------------------------------------------------------------------------
+// 1. Configuration du Client Supabase
+// -----------------------------------------------------------------------------
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.warn('Missing Supabase environment variables. Please check your .env file.')
+// Vérification des variables d'environnement (Critique)
+if (!import.meta.env.VITE_SUPABASE_URL) {
+  console.error("❌ VITE_SUPABASE_URL n'est pas défini. La connexion Supabase échouera.");
+}
+if (!import.meta.env.VITE_SUPABASE_ANON_KEY) {
+  console.error("❌ VITE_SUPABASE_ANON_KEY n'est pas défini. La connexion Supabase échouera.");
 }
 
-export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: true,
-    storage: typeof window !== 'undefined' ? localStorage : undefined,
-  },
-  global: {
-    headers: {
-      'X-Client-Info': 'voltflow-ai-web/v1.0.0',
+export const supabase = createClient<Database>(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY
+);
+
+// -----------------------------------------------------------------------------
+// 2. Gestion d'Erreur Avancée (Inspiré de SmooveBox)
+// -----------------------------------------------------------------------------
+
+/**
+ * Gère les erreurs Supabase et fournit un message utilisateur clair.
+ * @param error L'objet d'erreur retourné par Supabase.
+ * @param operation Description de l'opération en cours.
+ * @param context Contexte supplémentaire pour le débogage.
+ * @returns Un objet contenant les informations d'erreur pour l'utilisateur.
+ */
+export const handleSupabaseError = (error: any, operation: string = 'opération', context: any = {}) => {
+  console.error(`❌ Erreur lors de ${operation}:`, {
+    error,
+    context,
+    timestamp: new Date().toISOString()
+  });
+  
+  const errorMap: { [key: string]: { error: string, details: string, userMessage: string, severity: 'info' | 'warning' | 'error', action?: string } } = {
+    'PGRST116': { 
+      error: 'Aucun résultat trouvé', 
+      details: 'Aucune donnée correspondante trouvée dans la base de données',
+      userMessage: 'Aucune donnée trouvée pour votre recherche.',
+      severity: 'info'
     },
-  },
-  db: {
-    schema: 'public',
-  },
-  realtime: {
-    params: {
-      eventsPerSecond: 10,
+    '42501': { 
+      error: 'Permission refusée', 
+      details: 'Vous n\'avez pas les droits nécessaires pour cette opération',
+      userMessage: 'Vous n\'avez pas les permissions nécessaires pour effectuer cette action.',
+      severity: 'warning'
     },
-  },
-})
+    '401': {
+      error: 'Non autorisé',
+      details: 'Authentification requise ou jeton invalide',
+      userMessage: 'Votre session a expiré ou vous n\'êtes pas autorisé. Veuillez vous reconnecter.',
+      severity: 'warning',
+      action: 'redirectToLogin'
+    },
+    '429': {
+      error: 'Limite atteinte',
+      details: 'Limite de simulations mensuelle atteinte',
+      userMessage: 'Limite de simulations mensuelle atteinte. Veuillez mettre à niveau votre plan.',
+      severity: 'warning',
+      action: 'redirectToBilling'
+    },
+    // Erreurs génériques
+    'default': { 
+      error: 'Erreur inattendue', 
+      details: error.message || 'Une erreur s\'est produite',
+      userMessage: 'Une erreur inattendue s\'est produite. Veuillez réessayer.',
+      severity: 'error'
+    }
+  };
 
-// Types helpers
-export type Tables<T extends keyof Database['public']['Tables']> = 
-  Database['public']['Tables'][T]['Row']
+  const errorInfo = errorMap[error.code] || errorMap['default'];
 
-export type InsertTables<T extends keyof Database['public']['Tables']> = 
-  Database['public']['Tables'][T]['Insert']
-
-export type UpdateTables<T extends keyof Database['public']['Tables']> = 
-  Database['public']['Tables'][T]['Update']
-
-// API helpers with error handling
-export const getCurrentUser = async () => {
-  try {
-    const { data: { user }, error } = await supabase.auth.getUser()
-    if (error) throw error
-    return user
-  } catch (error) {
-    console.error('Error getting current user:', error)
-    return null
+  if (errorInfo.severity === 'error') {
+    console.error('🚨 Erreur critique:', {
+      operation,
+      error: errorInfo,
+      context,
+      timestamp: new Date().toISOString()
+    });
   }
-}
+  return errorInfo;
+};
 
-export const getUserProfile = async (userId: string) => {
+// -----------------------------------------------------------------------------
+// 3. Fonction de Diagnostic (Optionnel mais Recommandé)
+// -----------------------------------------------------------------------------
+
+/**
+ * Vérifie l'état de la connexion Supabase.
+ */
+export const checkSupabaseConnection = async () => {
   try {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', userId)
-      .single()
+    // Tentative de lecture d'une table publique ou d'une requête simple
+    const { data, error } = await supabase.from('users').select('id').limit(1);
     
     if (error) {
-      if (error.code === 'PGRST116') {
-        // User profile doesn't exist, create it
-        return await createUserProfile(userId)
+      // Si l'erreur est une erreur de permission (401, 42501), la connexion est établie mais les RLS sont actifs.
+      // Si l'erreur est une erreur réseau, la connexion est coupée.
+      if (error.code === '401' || error.code === '42501') {
+        return { status: 'connected', message: 'Connexion établie, RLS actif.' };
       }
-      throw error
+      throw error;
     }
     
-    return data
-  } catch (error) {
-    console.error('Error getting user profile:', error)
-    throw error
+    return { status: 'connected', message: 'Connexion établie et fonctionnelle.' };
+  } catch (e: any) {
+    console.error('Erreur de diagnostic Supabase:', e);
+    return { status: 'disconnected', message: e.message || 'Erreur réseau ou configuration invalide.' };
   }
-}
-
-const createUserProfile = async (userId: string) => {
-  try {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('No user found')
-
-    const { data, error } = await supabase
-      .from('users')
-      .insert({
-        id: userId,
-        email: user.email || '',
-        full_name: user.user_metadata?.full_name || user.email?.split('@')[0] || 'User',
-        role: 'user',
-        subscription_plan: 'starter',
-        subscription_status: 'active',
-        simulations_used: 0,
-        simulations_limit: 10,
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Error creating user profile:', error)
-    throw error
-  }
-}
-
-export const createSimulation = async (data: {
-  name: string
-  description?: string
-  geometry_type: string
-  geometry_config: any
-  material_id?: string
-  boundary_conditions: any
-  mesh_density?: string
-}) => {
-  try {
-    const user = await getCurrentUser()
-    if (!user) throw new Error('Not authenticated')
-
-    const { data: simulation, error } = await supabase
-      .from('simulations')
-      .insert({
-        user_id: user.id,
-        ...data,
-        status: 'pending',
-        progress: 0,
-      })
-      .select()
-      .single()
-
-    if (error) throw error
-    
-    // Increment simulations used count
-    await supabase.rpc('increment_simulations_used', { user_uuid: user.id })
-    
-    return simulation
-  } catch (error) {
-    console.error('Error creating simulation:', error)
-    throw error
-  }
-}
-
-export const runSimulation = async (simulationId: string, config: any) => {
-  try {
-    const user = await getCurrentUser()
-    if (!user) throw new Error('Not authenticated')
-
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) throw new Error('No active session')
-
-    // Verify simulation exists and belongs to user
-    const { data: simulation, error: simError } = await supabase
-      .from('simulations')
-      .select('id, user_id')
-      .eq('id', simulationId)
-      .eq('user_id', user.id)
-      .single()
-
-    if (simError || !simulation) {
-      throw new Error('Simulation not found or unauthorized')
-    }
-
-    // Call edge function
-    const { data, error } = await supabase.functions.invoke('simulate', {
-      method: 'POST',
-      body: {
-        simulationId,
-        config,
-      },
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-      },
-    })
-
-    if (error) {
-      // Update simulation status to failed
-      await supabase
-        .from('simulations')
-        .update({ status: 'failed', progress: 0 })
-        .eq('id', simulationId)
-      
-      throw new Error(`Simulation failed: ${error.message}`)
-    }
-
-    return data
-  } catch (error) {
-    console.error('Error running simulation:', error)
-    throw error
-  }
-}
-
-export const getSimulations = async (filters?: {
-  status?: string
-  limit?: number
-  offset?: number
-  orderBy?: string
-  ascending?: boolean
-}) => {
-  try {
-    const user = await getCurrentUser()
-    if (!user) throw new Error('Not authenticated')
-
-    let query = supabase
-      .from('simulations')
-      .select(`
-        *,
-        simulation_results (*),
-        materials (*)
-      `)
-      .eq('user_id', user.id)
-
-    if (filters?.status) {
-      query = query.eq('status', filters.status)
-    }
-
-    if (filters?.limit) {
-      query = query.limit(filters.limit)
-    }
-
-    if (filters?.offset) {
-      query = query.range(filters.offset, filters.offset + (filters.limit || 10) - 1)
-    }
-
-    if (filters?.orderBy) {
-      query = query.order(filters.orderBy, { 
-        ascending: filters.ascending !== false 
-      })
-    } else {
-      query = query.order('created_at', { ascending: false })
-    }
-
-    const { data, error } = await query
-
-    if (error) throw error
-    return data || []
-  } catch (error) {
-    console.error('Error getting simulations:', error)
-    throw error
-  }
-}
-
-export const uploadGeometryFile = async (file: File, simulationId?: string) => {
-  try {
-    const user = await getCurrentUser()
-    if (!user) throw new Error('Not authenticated')
-
-    // Convert file to base64
-    const arrayBuffer = await file.arrayBuffer()
-    const base64String = btoa(
-      String.fromCharCode(...new Uint8Array(arrayBuffer))
-    )
-
-    const { data: { session } } = await supabase.auth.getSession()
-    if (!session) throw new Error('No active session')
-
-    const { data, error } = await supabase.functions.invoke('upload-geometry', {
-      method: 'POST',
-      body: {
-        fileName: file.name,
-        fileData: base64String,
-        fileType: file.type,
-        userId: user.id,
-        simulationId,
-      },
-      headers: {
-        Authorization: `Bearer ${session.access_token}`,
-      },
-    })
-
-    if (error) throw error
-    return data
-  } catch (error) {
-    console.error('Error uploading geometry:', error)
-    throw error
-  }
-}
-
-// Real-time subscriptions
-export const subscribeToSimulation = (simulationId: string, callback: (payload: any) => void) => {
-  return supabase
-    .channel(`simulation-${simulationId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'simulations',
-        filter: `id=eq.${simulationId}`,
-      },
-      callback
-    )
-    .subscribe()
-}
-
-export const unsubscribeFromChannel = (channel: any) => {
-  supabase.removeChannel(channel)
-}
+};
