@@ -1,178 +1,117 @@
-// FICHIER CORRIGÉ : frontend/src/contexts/AuthContext.tsx
-// Basé sur l'architecture robuste de SmooveBox v2
-import React, { createContext, useContext, useEffect, useState, useCallback, useMemo } from 'react';
-import { supabase } from '../lib/supabase';
-import { Session } from '@supabase/supabase-js';
-import { Database } from '../lib/database.types';
+// FICHIER CORRIGÉ : frontend/src/lib/supabase.ts
+// Client Supabase uniquement - sans fonctions métier
 
-// Définir les types pour le profil utilisateur
-type Profile = Database['public']['Tables']['users']['Row'];
+import { createClient } from '@supabase/supabase-js';
+import type { Database } from './database.types';
 
-// Définir le type pour le contexte d'authentification
-interface AuthContextType {
-  user: Session['user'] | null;
-  profile: Profile | null;
-  loading: boolean;
-  error: string | null;
-  signIn: (email: string) => Promise<void>;
-  signOut: () => Promise<void>;
-  updateUserProfile: (updates: Partial<Profile>) => Promise<Profile | null>;
+// -----------------------------------------------------------------------------
+// 1. CONFIGURATION STRICTE
+// -----------------------------------------------------------------------------
+
+if (!import.meta.env.VITE_SUPABASE_URL) {
+  throw new Error('❌ VITE_SUPABASE_URL manquant dans .env');
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+if (!import.meta.env.VITE_SUPABASE_ANON_KEY) {
+  throw new Error('❌ VITE_SUPABASE_ANON_KEY manquant dans .env');
+}
 
-export const useAuth = () => {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
+// -----------------------------------------------------------------------------
+// 2. CLIENT SUPABASE PRINCIPAL
+// -----------------------------------------------------------------------------
+
+export const supabase = createClient<Database>(
+  import.meta.env.VITE_SUPABASE_URL,
+  import.meta.env.VITE_SUPABASE_ANON_KEY,
+  {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true
+    },
+    global: {
+      headers: {
+        'x-application-name': 'voltflow-ai'
+      }
+    }
   }
-  return context;
+);
+
+// -----------------------------------------------------------------------------
+// 3. UTILITAIRES GLOBAUX - CORRIGÉS POUR ÉVITER LES 404
+// -----------------------------------------------------------------------------
+
+/**
+ * Vérifie la connexion à Supabase sans requêter une table spécifique
+ */
+export const checkSupabaseConnection = async () => {
+  try {
+    // Utilise une table système ou une requête qui échouera proprement
+    const { error } = await supabase
+      .from('_nonexistent_table_for_connection_test')
+      .select('*')
+      .limit(0);
+
+    // Si erreur 42P01 = table inexistante → connexion OK mais table absente
+    // Si erreur 42501/401 = RLS actif → connexion OK
+    // Sinon, erreur de connexion
+    if (error) {
+      if (error.code === '42P01' || error.code === '42501' || error.code === '401') {
+        return { 
+          status: 'connected', 
+          message: 'Connexion Supabase établie' 
+        };
+      }
+      return { 
+        status: 'disconnected', 
+        message: `Erreur: ${error.message}` 
+      };
+    }
+    
+    return { 
+      status: 'connected', 
+      message: 'Connexion Supabase établie' 
+    };
+  } catch (e: any) {
+    console.error('❌ Diagnostic Supabase échoué:', e);
+    return { 
+      status: 'disconnected', 
+      message: e.message || 'Impossible de se connecter à Supabase' 
+    };
+  }
 };
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<Session['user'] | null>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  // Fonction pour créer un profil utilisateur (similaire à SmooveBox)
-  const createUserProfile = async (userData: Session['user']): Promise<Profile> => {
-    const profileData: Profile = {
-      id: userData.id,
-      email: userData.email || '',
-      full_name: userData.user_metadata?.full_name || null,
-      avatar_url: userData.user_metadata?.avatar_url || null,
-      role: 'user',
-      subscription_plan: 'free',
-      simulations_used: 0,
-      simulations_limit: 5,
-      stripe_customer_id: null,
-      stripe_subscription_id: null,
-      subscription_status: 'active',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
-
-    const { error: profileError } = await supabase
-      .from('users')
-      .insert(profileData as any); // Utiliser 'as any' pour les types complexes
-      
-    if (profileError && profileError.code !== '23505') { // 23505 = duplicate key (déjà créé)
-      console.error('Erreur création profil:', profileError);
-      throw profileError;
-    }
-    return profileData;
+/**
+ * Gestionnaire d'erreurs standardisé
+ */
+export const handleSupabaseError = (
+  error: any, 
+  operation = 'opération',
+  context: Record<string, any> = {}
+) => {
+  const errorDetails = {
+    code: error?.code || 'UNKNOWN',
+    message: error?.message || 'Erreur inconnue',
+    operation,
+    context,
+    timestamp: new Date().toISOString()
   };
-
-  // Récupérer ou créer le profil utilisateur
-  const fetchUserProfile = async (userData: Session['user']): Promise<Profile | null> => {
-    if (!userData.id) return null;
-    try {
-      const { data: existingProfile, error: profileError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', userData.id)
-        .single();
-
-      if (profileError && profileError.code !== 'PGRST116') {
-        console.error('Erreur récupération profil:', profileError);
-      }
-
-      if (!existingProfile) {
-        return await createUserProfile(userData);
-      }
-      return existingProfile;
-    } catch (e) {
-      console.error('Erreur lors du fetch/création du profil:', e);
-      return null;
-    }
+  
+  console.error(`❌ Erreur Supabase (${operation}):`, errorDetails);
+  
+  const userMessages: Record<string, string> = {
+    'PGRST116': 'Aucune donnée trouvée',
+    '42501': 'Permission refusée',
+    '401': 'Session expirée - Veuillez vous reconnecter',
+    '429': 'Limite de requêtes atteinte',
+    '42P01': 'Table non trouvée - Contactez le support',
+    '08006': 'Erreur de connexion à la base de données',
+    'UNKNOWN': 'Une erreur est survenue'
   };
-
-  // Mise à jour du profil
-  const updateUserProfile = useCallback(async (updates: Partial<Profile>): Promise<Profile | null> => {
-    try {
-      if (!user?.id) throw new Error('Utilisateur non connecté');
-      const { data, error } = await supabase
-        .from('users')
-        .update({
-          ...updates,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', user.id)
-        .select()
-        .single();
-      
-      if (error) throw error;
-      setProfile(data as Profile);
-      return data as Profile;
-    } catch (e) {
-      console.error('Erreur mise à jour profil:', e);
-      setError('Échec de la mise à jour du profil.');
-      return null;
-    }
-  }, [user]);
-
-  // Écouteur d'état d'authentification
-  useEffect(() => {
-    const { data: listener } = supabase.auth.onAuthStateChange(async (event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        const userProfile = await fetchUserProfile(session.user);
-        setProfile(userProfile);
-      } else {
-        setProfile(null);
-      }
-      setLoading(false);
-    });
-
-    // Récupération initiale de la session
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      if (session?.user) {
-        const userProfile = await fetchUserProfile(session.user);
-        setProfile(userProfile);
-      }
-      setLoading(false);
-    });
-
-    return () => {
-      listener.subscription.unsubscribe();
-    };
-  }, []);
-
-  // Fonctions d'authentification
-  const signIn = useCallback(async (email: string) => {
-    setLoading(true);
-    const { error } = await supabase.auth.signInWithOtp({ email });
-    setLoading(false);
-    if (error) {
-      setError(error.message);
-      throw error;
-    }
-  }, []);
-
-  const signOut = useCallback(async () => {
-    setLoading(true);
-    const { error } = await supabase.auth.signOut();
-    setLoading(false);
-    if (error) {
-      setError(error.message);
-      throw error;
-    }
-  }, []);
-
-  const value = useMemo(() => ({
-    user,
-    profile,
-    loading,
-    error,
-    signIn,
-    signOut,
-    updateUserProfile,
-  }), [user, profile, loading, error, signIn, signOut, updateUserProfile]);
-
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  
+  return {
+    ...errorDetails,
+    userMessage: userMessages[errorDetails.code] || userMessages.UNKNOWN,
+    severity: errorDetails.code === '401' ? 'warning' : 'error'
+  };
 };
