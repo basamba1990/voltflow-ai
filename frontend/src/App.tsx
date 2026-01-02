@@ -1,5 +1,5 @@
 // frontend/src/App.tsx
-// VERSION COMPLÈTE CORRIGÉE - Architecture conforme
+// VERSION CORRIGÉE - COMPLÈTE ET SYNTAXE VALIDE
 
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -120,3 +120,14 @@ function App() {
                   actionButton: 'group-[.toast]:bg-primary group-[.toast]:text-primary-foreground',
                   cancelButton: 'group-[.toast]:bg-muted group-[.toast]:text-muted-foreground',
                 },
+              }}
+            />
+            <Router />
+          </TooltipProvider>
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
+  );
+}
+
+export default App;
