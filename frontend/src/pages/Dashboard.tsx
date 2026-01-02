@@ -1,4 +1,5 @@
 // FICHIER CORRIGÉ : frontend/src/pages/Dashboard.tsx
+
 import { Button } from "@/components/ui/button";
 import {
   LineChart,
@@ -34,6 +35,7 @@ import {
 } from "@/services/simulation.service";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
+import { supabase } from "@/lib/supabase";
 
 /**
  * VoltFlow AI - Dashboard
@@ -146,20 +148,30 @@ export default function Dashboard() {
     }
   }, [user, signOut]);
 
-  // CORRECTION : Charger seulement si utilisateur connecté
+  // CORRECTION : VÉRIFICATION EXPLICITE avant tout chargement
   useEffect(() => {
-    if (!user) {
-      setLoading(false);
-      return;
-    }
+    const init = async () => {
+      // 1. Vérifier la session d'abord
+      const { data: { session } } = await supabase.auth.getSession();
+      
+      if (!session) {
+        console.log('⚠️ Dashboard: utilisateur non connecté, skip loadSimulations');
+        setLoading(false);
+        setError('Veuillez vous connecter pour accéder au dashboard');
+        return;
+      }
+      
+      // 2. Seulement ensuite charger les données
+      await loadSimulations();
+    };
     
-    loadSimulations();
-
+    init();
+    
     return () => {
       // Cleanup realtime subscriptions
       realtimeChannelsRef.current.forEach(channel => unsubscribeFromChannel(channel));
     };
-  }, [user, loadSimulations]);
+  }, [loadSimulations]);
 
   const handleSignOut = async () => {
     try {
