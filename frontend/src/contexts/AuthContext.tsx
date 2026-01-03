@@ -5,8 +5,8 @@ import { supabase, validateEmailForAuth } from '../lib/supabase';
 import { Session } from '@supabase/supabase-js';
 import { Database } from '../lib/database.types';
 
-// CORRECTION : Utiliser 'profiles' au lieu de 'users' pour correspondre à la table réelle
-type Profile = Database['public']['Tables']['profiles']['Row'];
+// CORRECTION : Utiliser 'users' pour correspondre à la table réelle
+type Profile = Database['public']['Tables']['users']['Row'];
 
 interface AuthContextType {
   user: Session['user'] | null;
@@ -14,6 +14,7 @@ interface AuthContextType {
   loading: boolean;
   error: string | null;
   signIn: (email: string) => Promise<{error: any | null}>;
+  signInWithGithub: () => Promise<{error: any | null}>;
   signOut: () => Promise<void>;
   updateUserProfile: (updates: Partial<Profile>) => Promise<Profile | null>;
 }
@@ -42,15 +43,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: userData.email || '',
       full_name: userData.user_metadata?.full_name || null,
       avatar_url: userData.user_metadata?.avatar_url || null,
-      subscription_plan: 'free',
+      subscription_plan: 'starter',
       simulations_used: 0,
       simulations_limit: 10,
+      role: 'user',
+      subscription_status: 'active',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
 
     const { error: profileError } = await supabase
-      .from('profiles')
+      .from('users')
       .insert(profileData);
       
     if (profileError && profileError.code !== '23505') {
@@ -65,14 +68,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!userData.id) return null;
     try {
       const { data: existingProfile, error: profileError } = await supabase
-        .from('profiles')
+        .from('users')
         .select('*')
         .eq('id', userData.id)
         .single();
 
       if (profileError) {
         if (profileError.code === 'PGRST116') {
-          console.log('Table profiles non trouvée, création...');
+          console.log('Table users non trouvée, création...');
           return await createUserProfile(userData);
         }
         console.error('❌ Erreur récupération profil:', profileError);
@@ -90,7 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (!user?.id) throw new Error('Utilisateur non connecté');
       const { data, error } = await supabase
-        .from('profiles')
+        .from('users')
         .update({
           ...updates,
           updated_at: new Date().toISOString()
@@ -139,6 +142,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     return () => {
       listener.subscription.unsubscribe();
     };
+  }, []);
+
+  // Connexion avec GitHub
+  const signInWithGithub = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'github',
+        options: {
+          redirectTo: `${window.location.origin}/dashboard`,
+        },
+      });
+      if (error) throw error;
+      return { error: null };
+    } catch (e: any) {
+      setLoading(false);
+      setError(e.message);
+      return { error: e };
+    }
   }, []);
 
   // CORRECTION CRITIQUE : Fonction signIn avec validation d'email
@@ -225,9 +248,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loading,
     error,
     signIn,
+    signInWithGithub,
     signOut,
     updateUserProfile,
-  }), [user, profile, loading, error, signIn, signOut, updateUserProfile]);
+  }), [user, profile, loading, error, signIn, signInWithGithub, signOut, updateUserProfile]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
