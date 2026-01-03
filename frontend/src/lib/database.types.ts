@@ -160,6 +160,8 @@ export interface Database {
           max_temperature: number | null
           min_temperature: number | null
           pressure_drop: number | null
+          uncertainty_score: number | null
+          domain_shift_alert: boolean | null
           thermal_efficiency: number | null
           convergence_metrics: Json | null
           result_files: Json | null
@@ -175,6 +177,8 @@ export interface Database {
           max_temperature?: number | null
           min_temperature?: number | null
           pressure_drop?: number | null
+          uncertainty_score?: number | null
+          domain_shift_alert?: boolean | null
           thermal_efficiency?: number | null
           convergence_metrics?: Json | null
           result_files?: Json | null
@@ -190,6 +194,8 @@ export interface Database {
           max_temperature?: number | null
           min_temperature?: number | null
           pressure_drop?: number | null
+          uncertainty_score?: number | null
+          domain_shift_alert?: boolean | null
           thermal_efficiency?: number | null
           convergence_metrics?: Json | null
           result_files?: Json | null
