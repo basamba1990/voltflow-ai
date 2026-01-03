@@ -21,7 +21,10 @@ import {
   Trash2,
   Settings,
   BarChart3,
-  Thermometer
+  Thermometer,
+  Wind,
+  Zap,
+  Loader2
 } from 'lucide-react'
 
 export default function SimulationEditor() {
@@ -29,65 +32,93 @@ export default function SimulationEditor() {
   const { id } = useParams<{ id: string }>()
   const { simulation, progress, status } = useSimulationRealtime(id)
   
+  // Basic Config
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
-  const [geometryType, setGeometryType] = useState<'tube' | 'plate' | 'coil' | 'custom'>('tube')
-  const [materialId, setMaterialId] = useState('')
-  const [meshDensity, setMeshDensity] = useState<'low' | 'medium' | 'high'>('medium')
+  const [geometryType, setGeometryType] = useState('tube')
+  const [materialId, setMaterialId] = useState('aluminum-6061')
+  const [meshDensity, setMeshDensity] = useState<'low' | 'medium' | 'high'>('low')
+  
+  // Thermal Conditions
+  const [initialTemp, setInitialTemp] = useState('200')
+  const [ambientTemp, setAmbientTemp] = useState('25')
+  const [coolingType, setCoolingType] = useState('natural_convection')
+  const [convectionCoeff, setConvectionCoeff] = useState('15')
+  
+  // Fluid Dynamics
+  const [fluidType, setFluidType] = useState('air')
+  const [fluidVelocity, setFluidVelocity] = useState('1.5')
+  
   const [isLoading, setIsLoading] = useState(false)
   const [materials, setMaterials] = useState<Array<{ id: string; name: string; category: string }>>([])
 
-  // Charger les matériaux disponibles
   useEffect(() => {
-    const loadMaterials = async () => {
-      // Ici vous devriez charger depuis votre API
-      setMaterials([
-        { id: '1', name: 'Aluminum 6061', category: 'metal' },
-        { id: '2', name: 'Copper', category: 'metal' },
-        { id: '3', name: 'Stainless Steel 304', category: 'metal' },
-      ])
-    }
-    loadMaterials()
+    setMaterials([
+      { id: 'aluminum-6061', name: 'Aluminum 6061', category: 'metal' },
+      { id: 'copper', name: 'Copper', category: 'metal' },
+      { id: 'stainless-304', name: 'Stainless Steel 304', category: 'metal' },
+    ])
   }, [])
 
-  // Charger les données de la simulation si ID présent
   useEffect(() => {
     if (id && simulation) {
       setName(simulation.name)
       setDescription(simulation.description || '')
       setGeometryType(simulation.geometry_type)
-      setMaterialId(simulation.material_id || '')
-      setMeshDensity(simulation.mesh_density)
+      setMaterialId(simulation.material_id || 'aluminum-6061')
+      setMeshDensity(simulation.mesh_density as any)
+      
+      const bc = simulation.boundary_conditions as any
+      if (bc) {
+        setInitialTemp(bc.initial_temp?.toString() || '200')
+        setAmbientTemp(bc.ambient_temp?.toString() || '25')
+        setCoolingType(bc.cooling_type || 'natural_convection')
+        setConvectionCoeff(bc.convection_coeff?.toString() || '15')
+        setFluidType(bc.fluid_type || 'air')
+        setFluidVelocity(bc.fluid_velocity?.toString() || '1.5')
+      }
     }
   }, [id, simulation])
 
+  const getPayload = () => ({
+    name,
+    description,
+    geometryType,
+    config: {
+      geometry_config: { type: geometryType },
+      material_id: materialId,
+      mesh_density: meshDensity,
+      boundary_conditions: {
+        initial_temp: parseFloat(initialTemp),
+        ambient_temp: parseFloat(ambientTemp),
+        cooling_type: coolingType,
+        convection_coeff: parseFloat(convectionCoeff),
+        fluid_type: fluidType,
+        fluid_velocity: parseFloat(fluidVelocity)
+      }
+    }
+  })
+
   const handleSave = async () => {
+    if (!name) {
+      toast.error('Le nom de la simulation est requis')
+      return
+    }
+    
     try {
       setIsLoading(true)
+      const payload = getPayload()
       
       if (id) {
-        // Mettre à jour la simulation existante
-        // Implémentez la mise à jour selon votre API
-        toast.success('Simulation updated')
+        await SimulationService.updateSimulation(id, payload)
+        toast.success('Simulation mise à jour')
       } else {
-        // Créer une nouvelle simulation
-        const newSim = await SimulationService.createSimulation({
-          name,
-          description,
-          geometryType,
-          config: {
-            geometry_config: { type: geometryType },
-            boundary_conditions: {},
-            material_id: materialId,
-            mesh_density: meshDensity
-          }
-        })
-        
+        const newSim = await SimulationService.createSimulation(payload)
+        toast.success('Simulation créée')
         setLocation(`/simulation/${newSim.id}`)
-        toast.success('Simulation created')
       }
     } catch (error: any) {
-      toast.error(`Error: ${error.message}`)
+      toast.error(`Erreur: ${error.message}`)
     } finally {
       setIsLoading(false)
     }
@@ -95,355 +126,215 @@ export default function SimulationEditor() {
 
   const handleRunSimulation = async () => {
     if (!id) {
-      toast.error('Please save the simulation first')
+      toast.error('Veuillez d\'abord enregistrer la simulation')
       return
     }
 
     try {
       setIsLoading(true)
-      toast.info('Starting simulation...')
-      
+      toast.info('Démarrage de la simulation PINN...')
       await SimulationService.startSimulation(id)
-      toast.success('Simulation started successfully')
+      toast.success('Simulation lancée avec succès')
     } catch (error: any) {
-      toast.error(`Failed to start simulation: ${error.message}`)
+      toast.error(`Échec du lancement: ${error.message}`)
     } finally {
       setIsLoading(false)
     }
   }
 
-  const handleUploadGeometry = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file || !id) return
-
+  const handleDelete = async () => {
+    if (!id || !window.confirm('Supprimer cette simulation ?')) return
     try {
       setIsLoading(true)
-      toast.info('Uploading geometry file...')
-      
-      const result = await SimulationService.uploadGeometry(file, id)
-      
-      toast.success(`File uploaded: ${result.fileName}`)
-      // Réinitialiser l'input
-      event.target.value = ''
+      await SimulationService.deleteSimulation(id)
+      toast.success('Simulation supprimée')
+      setLocation('/dashboard')
     } catch (error: any) {
-      toast.error(`Upload failed: ${error.message}`)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleDownloadResults = async () => {
-    if (!id) return
-
-    try {
-      setIsLoading(true)
-      const results = await SimulationService.getSimulationResults(id)
-      
-      // Créer un blob JSON pour le téléchargement
-      const blob = new Blob([JSON.stringify(results, null, 2)], {
-        type: 'application/json'
-      })
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `simulation-results-${id}.json`
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      
-      toast.success('Results downloaded')
-    } catch (error: any) {
-      toast.error(`Download failed: ${error.message}`)
+      toast.error(error.message)
     } finally {
       setIsLoading(false)
     }
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
+    <div className="container mx-auto p-6 space-y-6 bg-background text-foreground min-h-screen">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">
-            {id ? 'Edit Simulation' : 'New Simulation'}
+          <h1 className="text-3xl font-bold flex items-center gap-2">
+            <Zap className="text-primary w-8 h-8" />
+            {id ? 'Modifier la Simulation' : 'Nouvelle Simulation'}
           </h1>
           <p className="text-muted-foreground">
-            Configure and run thermal simulations
+            Configurez et lancez vos simulations thermiques haute performance
           </p>
         </div>
         
-        <div className="flex items-center gap-2">
-          {id && status !== 'running' && (
-            <Button
-              variant="outline"
-              onClick={() => SimulationService.cancelSimulation(id)}
-              disabled={isLoading}
-            >
+        <div className="flex items-center gap-3">
+          {id && (
+            <Button variant="outline" onClick={handleDelete} disabled={isLoading || status === 'running'}>
               <Trash2 className="w-4 h-4 mr-2" />
-              Delete
+              Supprimer
             </Button>
           )}
-          
-          <Button
-            onClick={handleSave}
-            disabled={isLoading}
-          >
-            <Save className="w-4 h-4 mr-2" />
-            {id ? 'Update' : 'Save'}
+          <Button onClick={handleSave} disabled={isLoading || status === 'running'} className="bg-primary hover:bg-primary/90">
+            {isLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+            {id ? 'Mettre à jour' : 'Enregistrer'}
           </Button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - Configuration */}
         <div className="lg:col-span-2 space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Simulation Configuration</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="name">Simulation Name</Label>
-                <Input
-                  id="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Enter simulation name"
-                />
-              </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Describe your simulation..."
-                  rows={3}
-                />
-              </div>
-              
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="geometry-type">Geometry Type</Label>
-                  <Select
-                    value={geometryType}
-                    onValueChange={(value: any) => setGeometryType(value)}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="tube">Tube</SelectItem>
-                      <SelectItem value="plate">Plate</SelectItem>
-                      <SelectItem value="coil">Coil</SelectItem>
-                      <SelectItem value="custom">Custom</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                <div className="space-y-2">
-                  <Label htmlFor="material">Material</Label>
-                  <Select
-                    value={materialId}
-                    onValueChange={setMaterialId}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select material" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {materials.map((material) => (
-                        <SelectItem key={material.id} value={material.id}>
-                          {material.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              
-              <div className="space-y-2">
-                <Label htmlFor="mesh-density">Mesh Density</Label>
-                <Select
-                  value={meshDensity}
-                  onValueChange={(value: any) => setMeshDensity(value)}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="low">Low (Fast)</SelectItem>
-                    <SelectItem value="medium">Medium (Balanced)</SelectItem>
-                    <SelectItem value="high">High (Accurate)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </CardContent>
-          </Card>
+          <Tabs defaultValue="config" className="w-full">
+            <TabsList className="grid w-full grid-cols-3 bg-card border border-border">
+              <TabsTrigger value="config">Configuration</TabsTrigger>
+              <TabsTrigger value="thermal">Thermique</TabsTrigger>
+              <TabsTrigger value="fluid">Fluide</TabsTrigger>
+            </TabsList>
+            
+            <TabsContent value="config" className="mt-4">
+              <Card className="border-border bg-card/50">
+                <CardHeader><CardTitle className="text-lg">Paramètres de base</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Nom de la simulation</Label>
+                    <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Refroidissement tube Alu 6061" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Description</Label>
+                    <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Détails du projet..." rows={2} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Géométrie</Label>
+                      <Select value={geometryType} onValueChange={setGeometryType}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="tube">Tube</SelectItem>
+                          <SelectItem value="plate">Plaque</SelectItem>
+                          <SelectItem value="coil">Serpentin</SelectItem>
+                          <SelectItem value="custom">Custom (STL/STEP)</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Matériau</Label>
+                      <Select value={materialId} onValueChange={setMaterialId}>
+                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {materials.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Précision / Vitesse (Moteur PINN)</Label>
+                    <Select value={meshDensity} onValueChange={(v: any) => setMeshDensity(v)}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low (Fast - Secondes)</SelectItem>
+                        <SelectItem value="medium">Medium (Balanced)</SelectItem>
+                        <SelectItem value="high">High (Accurate - Minutes)</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
 
-          {id && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Geometry Upload</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="border-2 border-dashed border-border rounded-lg p-8 text-center">
-                  <Upload className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Upload your geometry file (STL, STEP, OBJ, IGES)
-                  </p>
-                  <Input
-                    type="file"
-                    accept=".stl,.step,.stp,.obj,.iges,.igs"
-                    onChange={handleUploadGeometry}
-                    disabled={isLoading}
-                    className="mx-auto max-w-xs"
-                  />
-                  <p className="text-xs text-muted-foreground mt-4">
-                    Maximum file size: 50MB
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+            <TabsContent value="thermal" className="mt-4">
+              <Card className="border-border bg-card/50">
+                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Thermometer className="w-5 h-5 text-primary" /> Conditions Thermiques</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label>Température initiale (°C)</Label>
+                      <Input type="number" value={initialTemp} onChange={(e) => setInitialTemp(e.target.value)} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Température ambiante (°C)</Label>
+                      <Input type="number" value={ambientTemp} onChange={(e) => setAmbientTemp(e.target.value)} />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Type de refroidissement</Label>
+                    <Select value={coolingType} onValueChange={setCoolingType}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="natural_convection">Convection naturelle</SelectItem>
+                        <SelectItem value="forced_convection">Convection forcée</SelectItem>
+                        <SelectItem value="radiation">Radiation</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Coefficient de convection (W/m²·K)</Label>
+                    <Input type="number" value={convectionCoeff} onChange={(e) => setConvectionCoeff(e.target.value)} />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="fluid" className="mt-4">
+              <Card className="border-border bg-card/50">
+                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Wind className="w-5 h-5 text-secondary" /> Dynamique Fluide</CardTitle></CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label>Fluide</Label>
+                    <Select value={fluidType} onValueChange={setFluidType}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="air">Air</SelectItem>
+                        <SelectItem value="water">Eau</SelectItem>
+                        <SelectItem value="oil">Huile industrielle</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Vitesse du fluide (m/s)</Label>
+                    <Input type="number" step="0.1" value={fluidVelocity} onChange={(e) => setFluidVelocity(e.target.value)} />
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+          </Tabs>
         </div>
 
-        {/* Right Column - Status and Actions */}
         <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>Simulation Status</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {id ? (
-                <SimulationStatus
-                  progress={progress}
-                  status={status}
-                  estimatedDuration={30}
-                />
-              ) : (
-                <p className="text-muted-foreground text-sm">
-                  Save the simulation to see status
-                </p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle>Actions</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Button
-                className="w-full"
-                onClick={handleRunSimulation}
-                disabled={!id || isLoading || status === 'running'}
-              >
-                <Play className="w-4 h-4 mr-2" />
-                Run Simulation
-              </Button>
-              
-              {id && status === 'completed' && (
-                <Button
-                  variant="outline"
-                  className="w-full"
-                  onClick={handleDownloadResults}
-                  disabled={isLoading}
+          <Card className="border-primary/20 bg-primary/5">
+            <CardHeader><CardTitle className="text-lg">Statut de la Simulation</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <SimulationStatus status={status as any} progress={progress} />
+              <Separator className="bg-primary/10" />
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium">Actions</h4>
+                <Button 
+                  className="w-full bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20" 
+                  onClick={handleRunSimulation}
+                  disabled={isLoading || !id || status === 'running'}
                 >
-                  <Download className="w-4 h-4 mr-2" />
-                  Download Results
+                  {status === 'running' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+                  Lancer la Simulation
                 </Button>
-              )}
-              
-              <Separator />
-              
-              <div className="text-xs text-muted-foreground space-y-1">
-                <p className="flex items-center">
-                  <Settings className="w-3 h-3 mr-2" />
-                  Uses Physics-Informed Neural Networks
-                </p>
-                <p className="flex items-center">
-                  <BarChart3 className="w-3 h-3 mr-2" />
-                  Real-time convergence monitoring
-                </p>
-                <p className="flex items-center">
-                  <Thermometer className="w-3 h-3 mr-2" />
-                  Thermal and fluid dynamics analysis
-                </p>
+                {status === 'completed' && (
+                  <Button variant="outline" className="w-full" onClick={() => SimulationService.getSimulationResults(id!)}>
+                    <Download className="w-4 h-4 mr-2" /> Télécharger les résultats
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>
 
-          {id && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Quick Actions</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start"
-                  onClick={() => setLocation('/dashboard')}
-                >
-                  Back to Dashboard
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start"
-                  onClick={() => window.location.reload()}
-                >
-                  Refresh Page
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="w-full justify-start"
-                  onClick={() => {
-                    // Ajouter une fonction de duplication
-                  }}
-                >
-                  Duplicate Simulation
-                </Button>
-              </CardContent>
-            </Card>
-          )}
+          <Card className="border-border bg-card/50">
+            <CardHeader><CardTitle className="text-sm font-medium">Moteur IA VoltFlow</CardTitle></CardHeader>
+            <CardContent className="text-xs text-muted-foreground space-y-2">
+              <p>✔ Physics-Informed Neural Networks (PINNs)</p>
+              <p>✔ Résolution couplage convection / conduction</p>
+              <p>✔ Surveillance de convergence en temps réel</p>
+            </CardContent>
+          </Card>
         </div>
       </div>
-
-      {/* Tabs for additional sections */}
-      {id && status === 'completed' && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Results Analysis</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Tabs defaultValue="temperature">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="temperature">Temperature</TabsTrigger>
-                <TabsTrigger value="pressure">Pressure</TabsTrigger>
-                <TabsTrigger value="efficiency">Efficiency</TabsTrigger>
-              </TabsList>
-              
-              <TabsContent value="temperature" className="space-y-4">
-                <div className="h-64 bg-card border rounded-lg flex items-center justify-center">
-                  <p className="text-muted-foreground">Temperature distribution visualization will appear here</p>
-                </div>
-              </TabsContent>
-              
-              <TabsContent value="pressure" className="space-y-4">
-                <div className="h-64 bg-card border rounded-lg flex items-center justify-center">
-                  <p className="text-muted-foreground">Pressure drop analysis will appear here</p>
-                </div>
-              </TabsContent>
-              
-              <TabsContent value="efficiency" className="space-y-4">
-                <div className="h-64 bg-card border rounded-lg flex items-center justify-center">
-                  <p className="text-muted-foreground">Thermal efficiency metrics will appear here</p>
-                </div>
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
-      )}
     </div>
   )
 }
