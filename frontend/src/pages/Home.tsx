@@ -13,7 +13,7 @@ import { useLocation } from "wouter";
 
 export default function Home() {
   const [hoveredPlan, setHoveredPlan] = useState<string | null>(null);
-  const { user, signIn, loading: authLoading } = useAuth();
+  const { user, signInWithGithub, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const [isRedirecting, setIsRedirecting] = useState(false);
 
@@ -119,8 +119,8 @@ export default function Home() {
   const handleSignIn = async () => {
     try {
       setIsRedirecting(true);
-      await signIn('github');
-      // Note: signIn redirige automatiquement, donc ce code ne s'exécute qu'en cas d'erreur
+      await signInWithGithub();
+      // Note: signInWithGithub redirige automatiquement, donc ce code ne s'exécute qu'en cas d'erreur
     } catch (error: any) {
       setIsRedirecting(false);
       console.error('Sign in error:', error);
