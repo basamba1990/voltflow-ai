@@ -105,6 +105,23 @@ export default function SimulationEditor() {
       return
     }
     
+    // VALIDATION CRITIQUE: Vérifier les champs numériques pour éviter l'erreur 22P02 (Invalid Text Representation)
+    const numericFields = [
+      { value: initialTemp, name: 'Température initiale' },
+      { value: ambientTemp, name: 'Température ambiante' },
+      { value: convectionCoeff, name: 'Coefficient de convection' },
+      { value: fluidVelocity, name: 'Vitesse du fluide' },
+    ];
+
+    for (const field of numericFields) {
+      const numValue = parseFloat(field.value);
+      if (field.value.trim() === '' || isNaN(numValue)) {
+        toast.error(`Veuillez entrer une valeur numérique valide pour : ${field.name}`);
+        return;
+      }
+    }
+    // FIN VALIDATION CRITIQUE
+    
     try {
       setIsLoading(true)
       const payload = getPayload()
