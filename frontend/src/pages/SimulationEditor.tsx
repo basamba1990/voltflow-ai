@@ -1,8 +1,8 @@
-// frontend/src/pages/SimulationEditor.tsx
+// FICHIER CORRIGÉ COMPLET : frontend/src/pages/SimulationEditor.tsx
+
 import { useState, useEffect } from 'react'
 import { useParams, useLocation } from 'wouter'
 import { SimulationService } from '@/services/simulationService'
-import { useSimulationRealtime } from '@/hooks/useSimulationRealtime'
 import { SimulationStatus } from '@/components/SimulationStatus'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -13,6 +13,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Separator } from '@/components/ui/separator'
 import { toast } from 'sonner'
+import { supabase } from '@/lib/supabase'
 import { 
   Save, 
   Play, 
@@ -30,7 +31,6 @@ import {
 export default function SimulationEditor() {
   const [, setLocation] = useLocation()
   const { id } = useParams<{ id: string }>()
-  const { simulation, progress, status } = useSimulationRealtime(id)
   
   // Basic Config
   const [name, setName] = useState('')
@@ -51,22 +51,42 @@ export default function SimulationEditor() {
   
   const [isLoading, setIsLoading] = useState(false)
   const [materials, setMaterials] = useState<Array<{ id: string; name: string; category: string }>>([])
+  const [simulationData, setSimulationData] = useState<any>(null)
+  const [simulationStatus, setSimulationStatus] = useState<'pending' | 'running' | 'completed' | 'failed'>('pending')
+  const [progress, setProgress] = useState(0)
 
+  // Récupérer les données de la simulation
   useEffect(() => {
-    setMaterials([
-      { id: 'aluminum-6061', name: 'Aluminum 6061', category: 'metal' },
-      { id: 'copper', name: 'Copper', category: 'metal' },
-      { id: 'stainless-304', name: 'Stainless Steel 304', category: 'metal' },
-    ])
-  }, [])
+    if (id) {
+      loadSimulationData()
+      subscribeToRealtimeUpdates()
+    }
+  }, [id])
 
-  useEffect(() => {
-    if (id && simulation) {
+  const loadSimulationData = async () => {
+    if (!id) return
+    
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) return
+      
+      const { data: simulation, error } = await supabase
+        .from('simulations')
+        .select('*')
+        .eq('id', id)
+        .eq('user_id', session.user.id)
+        .single()
+      
+      if (error) throw error
+      
+      setSimulationData(simulation)
       setName(simulation.name)
       setDescription(simulation.description || '')
       setGeometryType(simulation.geometry_type)
       setMaterialId(simulation.material_id || 'aluminum-6061')
       setMeshDensity(simulation.mesh_density as any)
+      setSimulationStatus(simulation.status)
+      setProgress(simulation.progress || 0)
       
       const bc = simulation.boundary_conditions as any
       if (bc) {
@@ -77,8 +97,45 @@ export default function SimulationEditor() {
         setFluidType(bc.fluid_type || 'air')
         setFluidVelocity(bc.fluid_velocity?.toString() || '1.5')
       }
+    } catch (error: any) {
+      console.error('Erreur chargement simulation:', error)
+      if (error.message !== 'PGRST116') {
+        toast.error('Erreur lors du chargement de la simulation')
+      }
     }
-  }, [id, simulation])
+  }
+
+  const subscribeToRealtimeUpdates = () => {
+    if (!id) return
+    
+    const channel = supabase
+      .channel(`simulation-${id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'simulations',
+          filter: `id=eq.${id}`
+        },
+        (payload) => {
+          const updatedSim = payload.new as any
+          setSimulationStatus(updatedSim.status)
+          setProgress(updatedSim.progress || 0)
+          
+          if (updatedSim.status === 'completed') {
+            toast.success('Simulation terminée!')
+          } else if (updatedSim.status === 'failed') {
+            toast.error('La simulation a échoué')
+          }
+        }
+      )
+      .subscribe()
+    
+    return () => {
+      supabase.removeChannel(channel)
+    }
+  }
 
   const getPayload = () => ({
     name,
@@ -133,9 +190,18 @@ export default function SimulationEditor() {
     try {
       setIsLoading(true)
       toast.info('Démarrage de la simulation PINN...')
-      await SimulationService.startSimulation(id)
-      toast.success('Simulation lancée avec succès')
+      
+      const result = await SimulationService.startSimulation(id)
+      
+      if (result.success) {
+        toast.success('Simulation lancée avec succès')
+        setSimulationStatus('running')
+        setProgress(5)
+      } else {
+        throw new Error(result.message || 'Erreur inconnue')
+      }
     } catch (error: any) {
+      console.error('Erreur lancement simulation:', error)
       toast.error(`Échec du lancement: ${error.message}`)
     } finally {
       setIsLoading(false)
@@ -156,6 +222,18 @@ export default function SimulationEditor() {
     }
   }
 
+  // Initialiser la liste des matériaux
+  useEffect(() => {
+    setMaterials([
+      { id: 'aluminum-6061', name: 'Aluminum 6061', category: 'metal' },
+      { id: 'copper', name: 'Copper', category: 'metal' },
+      { id: 'stainless-304', name: 'Stainless Steel 304', category: 'metal' },
+      { id: 'steel-a36', name: 'Steel A36', category: 'metal' },
+      { id: 'glass', name: 'Glass', category: 'non-metal' },
+      { id: 'plastic-pc', name: 'Polycarbonate', category: 'plastic' },
+    ])
+  }, [])
+
   return (
     <div className="container mx-auto p-6 space-y-6 bg-background text-foreground min-h-screen">
       <div className="flex items-center justify-between">
@@ -171,12 +249,21 @@ export default function SimulationEditor() {
         
         <div className="flex items-center gap-3">
           {id && (
-            <Button variant="outline" onClick={handleDelete} disabled={isLoading || status === 'running'}>
+            <Button 
+              variant="outline" 
+              onClick={handleDelete} 
+              disabled={isLoading || simulationStatus === 'running'}
+              className="border-destructive text-destructive hover:bg-destructive/10"
+            >
               <Trash2 className="w-4 h-4 mr-2" />
               Supprimer
             </Button>
           )}
-          <Button onClick={handleSave} disabled={isLoading || status === 'running'} className="bg-primary hover:bg-primary/90">
+          <Button 
+            onClick={handleSave} 
+            disabled={isLoading || simulationStatus === 'running'} 
+            className="bg-primary hover:bg-primary/90"
+          >
             {isLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
             {id ? 'Mettre à jour' : 'Enregistrer'}
           </Button>
@@ -194,21 +281,39 @@ export default function SimulationEditor() {
             
             <TabsContent value="config" className="mt-4">
               <Card className="border-border bg-card/50">
-                <CardHeader><CardTitle className="text-lg">Paramètres de base</CardTitle></CardHeader>
+                <CardHeader>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Settings className="w-5 h-5 text-primary" />
+                    Paramètres de base
+                  </CardTitle>
+                </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label>Nom de la simulation</Label>
-                    <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Refroidissement tube Alu 6061" />
+                    <Label htmlFor="name">Nom de la simulation</Label>
+                    <Input 
+                      id="name"
+                      value={name} 
+                      onChange={(e) => setName(e.target.value)} 
+                      placeholder="Ex: Refroidissement tube Alu 6061" 
+                    />
                   </div>
                   <div className="space-y-2">
-                    <Label>Description</Label>
-                    <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Détails du projet..." rows={2} />
+                    <Label htmlFor="description">Description</Label>
+                    <Textarea 
+                      id="description"
+                      value={description} 
+                      onChange={(e) => setDescription(e.target.value)} 
+                      placeholder="Détails du projet..." 
+                      rows={2} 
+                    />
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>Géométrie</Label>
+                      <Label htmlFor="geometry">Géométrie</Label>
                       <Select value={geometryType} onValueChange={setGeometryType}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectTrigger id="geometry">
+                          <SelectValue />
+                        </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="tube">Tube</SelectItem>
                           <SelectItem value="plate">Plaque</SelectItem>
@@ -218,19 +323,27 @@ export default function SimulationEditor() {
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <Label>Matériau</Label>
+                      <Label htmlFor="material">Matériau</Label>
                       <Select value={materialId} onValueChange={setMaterialId}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
+                        <SelectTrigger id="material">
+                          <SelectValue />
+                        </SelectTrigger>
                         <SelectContent>
-                          {materials.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                          {materials.map(m => (
+                            <SelectItem key={m.id} value={m.id}>
+                              {m.name}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label>Précision / Vitesse (Moteur PINN)</Label>
+                    <Label htmlFor="mesh">Précision / Vitesse (Moteur PINN)</Label>
                     <Select value={meshDensity} onValueChange={(v: any) => setMeshDensity(v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger id="mesh">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="low">Low (Fast - Secondes)</SelectItem>
                         <SelectItem value="medium">Medium (Balanced)</SelectItem>
@@ -244,22 +357,39 @@ export default function SimulationEditor() {
 
             <TabsContent value="thermal" className="mt-4">
               <Card className="border-border bg-card/50">
-                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Thermometer className="w-5 h-5 text-primary" /> Conditions Thermiques</CardTitle></CardHeader>
+                <CardHeader>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Thermometer className="w-5 h-5 text-primary" /> 
+                    Conditions Thermiques
+                  </CardTitle>
+                </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <Label>Température initiale (°C)</Label>
-                      <Input type="number" value={initialTemp} onChange={(e) => setInitialTemp(e.target.value)} />
+                      <Label htmlFor="initialTemp">Température initiale (°C)</Label>
+                      <Input 
+                        id="initialTemp"
+                        type="number" 
+                        value={initialTemp} 
+                        onChange={(e) => setInitialTemp(e.target.value)} 
+                      />
                     </div>
                     <div className="space-y-2">
-                      <Label>Température ambiante (°C)</Label>
-                      <Input type="number" value={ambientTemp} onChange={(e) => setAmbientTemp(e.target.value)} />
+                      <Label htmlFor="ambientTemp">Température ambiante (°C)</Label>
+                      <Input 
+                        id="ambientTemp"
+                        type="number" 
+                        value={ambientTemp} 
+                        onChange={(e) => setAmbientTemp(e.target.value)} 
+                      />
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <Label>Type de refroidissement</Label>
+                    <Label htmlFor="coolingType">Type de refroidissement</Label>
                     <Select value={coolingType} onValueChange={setCoolingType}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger id="coolingType">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="natural_convection">Convection naturelle</SelectItem>
                         <SelectItem value="forced_convection">Convection forcée</SelectItem>
@@ -268,8 +398,13 @@ export default function SimulationEditor() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Coefficient de convection (W/m²·K)</Label>
-                    <Input type="number" value={convectionCoeff} onChange={(e) => setConvectionCoeff(e.target.value)} />
+                    <Label htmlFor="convectionCoeff">Coefficient de convection (W/m²·K)</Label>
+                    <Input 
+                      id="convectionCoeff"
+                      type="number" 
+                      value={convectionCoeff} 
+                      onChange={(e) => setConvectionCoeff(e.target.value)} 
+                    />
                   </div>
                 </CardContent>
               </Card>
@@ -277,12 +412,19 @@ export default function SimulationEditor() {
 
             <TabsContent value="fluid" className="mt-4">
               <Card className="border-border bg-card/50">
-                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Wind className="w-5 h-5 text-secondary" /> Dynamique Fluide</CardTitle></CardHeader>
+                <CardHeader>
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Wind className="w-5 h-5 text-secondary" /> 
+                    Dynamique Fluide
+                  </CardTitle>
+                </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="space-y-2">
-                    <Label>Fluide</Label>
+                    <Label htmlFor="fluidType">Fluide</Label>
                     <Select value={fluidType} onValueChange={setFluidType}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectTrigger id="fluidType">
+                        <SelectValue />
+                      </SelectTrigger>
                       <SelectContent>
                         <SelectItem value="air">Air</SelectItem>
                         <SelectItem value="water">Eau</SelectItem>
@@ -291,8 +433,14 @@ export default function SimulationEditor() {
                     </Select>
                   </div>
                   <div className="space-y-2">
-                    <Label>Vitesse du fluide (m/s)</Label>
-                    <Input type="number" step="0.1" value={fluidVelocity} onChange={(e) => setFluidVelocity(e.target.value)} />
+                    <Label htmlFor="fluidVelocity">Vitesse du fluide (m/s)</Label>
+                    <Input 
+                      id="fluidVelocity"
+                      type="number" 
+                      step="0.1" 
+                      value={fluidVelocity} 
+                      onChange={(e) => setFluidVelocity(e.target.value)} 
+                    />
                   </div>
                 </CardContent>
               </Card>
@@ -302,23 +450,42 @@ export default function SimulationEditor() {
 
         <div className="space-y-6">
           <Card className="border-primary/20 bg-primary/5">
-            <CardHeader><CardTitle className="text-lg">Statut de la Simulation</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle className="text-lg">Statut de la Simulation</CardTitle>
+            </CardHeader>
             <CardContent className="space-y-4">
-              <SimulationStatus status={status as any} progress={progress} />
+              <SimulationStatus status={simulationStatus} progress={progress} />
               <Separator className="bg-primary/10" />
               <div className="space-y-2">
                 <h4 className="text-sm font-medium">Actions</h4>
                 <Button 
                   className="w-full bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20" 
                   onClick={handleRunSimulation}
-                  disabled={isLoading || !id || status === 'running'}
+                  disabled={isLoading || !id || simulationStatus === 'running'}
                 >
-                  {status === 'running' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-                  Lancer la Simulation
+                  {simulationStatus === 'running' ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Play className="w-4 h-4 mr-2" />
+                  )}
+                  {simulationStatus === 'running' ? 'Simulation en cours...' : 'Lancer la Simulation'}
                 </Button>
-                {status === 'completed' && (
-                  <Button variant="outline" className="w-full" onClick={() => SimulationService.getSimulationResults(id!)}>
-                    <Download className="w-4 h-4 mr-2" /> Télécharger les résultats
+                {simulationStatus === 'completed' && id && (
+                  <Button 
+                    variant="outline" 
+                    className="w-full"
+                    onClick={async () => {
+                      try {
+                        const results = await SimulationService.getSimulationResults(id)
+                        console.log('Résultats:', results)
+                        toast.success('Résultats téléchargés')
+                      } catch (error: any) {
+                        toast.error(`Erreur: ${error.message}`)
+                      }
+                    }}
+                  >
+                    <Download className="w-4 h-4 mr-2" /> 
+                    Télécharger les résultats
                   </Button>
                 )}
               </div>
@@ -326,11 +493,22 @@ export default function SimulationEditor() {
           </Card>
 
           <Card className="border-border bg-card/50">
-            <CardHeader><CardTitle className="text-sm font-medium">Moteur IA VoltFlow</CardTitle></CardHeader>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Moteur IA VoltFlow</CardTitle>
+            </CardHeader>
             <CardContent className="text-xs text-muted-foreground space-y-2">
-              <p>✔ Physics-Informed Neural Networks (PINNs)</p>
-              <p>✔ Résolution couplage convection / conduction</p>
-              <p>✔ Surveillance de convergence en temps réel</p>
+              <p className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                Physics-Informed Neural Networks (PINNs)
+              </p>
+              <p className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                Résolution couplage convection / conduction
+              </p>
+              <p className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-green-500"></div>
+                Surveillance de convergence en temps réel
+              </p>
             </CardContent>
           </Card>
         </div>
