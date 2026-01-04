@@ -13,12 +13,23 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import Home from "@/pages/Home";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import { useEffect, useState } from "react";
-import { checkSupabaseConnection } from "@/lib/supabase"; // IMPORT AJOUTÉ
+import { checkSupabaseConnection } from "@/lib/supabase";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 /**
  * VoltFlow AI - Application Router
  * Design: Neon-Noir Cinématique
  */
+
+// Création du client React Query
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60 * 1000, // 5 minutes
+      retry: 1,
+    },
+  },
+});
 
 function Router() {
   return (
@@ -107,25 +118,27 @@ function App() {
 
   return (
     <ErrorBoundary>
-      <ThemeProvider defaultTheme="dark">
-        <AuthProvider>
-          <TooltipProvider>
-            <Toaster 
-              position="top-right"
-              toastOptions={{
-                duration: 5000,
-                classNames: {
-                  toast: 'group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:shadow-lg',
-                  description: 'group-[.toast]:text-muted-foreground',
-                  actionButton: 'group-[.toast]:bg-primary group-[.toast]:text-primary-foreground',
-                  cancelButton: 'group-[.toast]:bg-muted group-[.toast]:text-muted-foreground',
-                },
-              }}
-            />
-            <Router />
-          </TooltipProvider>
-        </AuthProvider>
-      </ThemeProvider>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider defaultTheme="dark">
+          <AuthProvider>
+            <TooltipProvider>
+              <Toaster 
+                position="top-right"
+                toastOptions={{
+                  duration: 5000,
+                  classNames: {
+                    toast: 'group toast group-[.toaster]:bg-background group-[.toaster]:text-foreground group-[.toaster]:border-border group-[.toaster]:shadow-lg',
+                    description: 'group-[.toast]:text-muted-foreground',
+                    actionButton: 'group-[.toast]:bg-primary group-[.toast]:text-primary-foreground',
+                    cancelButton: 'group-[.toast]:bg-muted group-[.toast]:text-muted-foreground',
+                  },
+                }}
+              />
+              <Router />
+            </TooltipProvider>
+          </AuthProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
     </ErrorBoundary>
   );
 }
