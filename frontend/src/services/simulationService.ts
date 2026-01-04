@@ -42,13 +42,42 @@ export class SimulationService {
         material_id: params.config.material_id,
         mesh_density: params.config.mesh_density,
         status: 'pending',
-        progress: 0
+        progress: 0,
+        // NOUVEAU: Ajout du score de risque initial basé sur la méthodologie de l'article
+        risk_analysis_score: SimulationService.calculateInitialRisk(params.config)
       })
       .select()
       .single()
 
     if (error) throw new Error(`Failed to create simulation: ${error.message}`)
     return simulation
+  }
+
+  // NOUVELLE MÉTHODE: Calcul du score de risque initial (basé sur l'article)
+  static calculateInitialRisk(config: SimulationConfig): number {
+    // Calcul de base: basé sur la différence de température (risque thermique)
+    const initialTemp = parseFloat(config.boundary_conditions.initial_temp);
+    const ambientTemp = parseFloat(config.boundary_conditions.ambient_temp);
+    const tempDifference = Math.abs(initialTemp - ambientTemp);
+    
+    // Le score de risque est une valeur entre 0 et 100.
+    // Si la différence de température est très élevée (e.g., > 500°C), le risque est maximal.
+    const maxTempDiff = 500; 
+    let riskScore = Math.min(100, (tempDifference / maxTempDiff) * 100);
+    
+    // Ajustement basé sur le matériau (selon l'article sur les alliages AM)
+    if (config.material_id === 'al-er-zr-ni-am') {
+      // Si le matériau est le nouvel alliage haute performance, réduire le risque de 20%
+      // car il est conçu pour résister à de fortes contraintes thermiques.
+      riskScore *= 0.8; 
+    }
+    
+    // Ajustement basé sur la densité du maillage (une faible densité peut masquer des risques)
+    if (config.mesh_density === 'low') {
+      riskScore += 10; // Augmenter le risque si la précision est faible
+    }
+    
+    return Math.round(Math.min(100, riskScore));
   }
 
   static async updateSimulation(id: string, params: {
