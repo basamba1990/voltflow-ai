@@ -151,7 +151,11 @@ export default function SimulationEditor() {
     try {
       setIsLoading(true)
       toast.info('Démarrage de la simulation PINN...')
-      await SimulationService.startSimulation(id)
+      
+      // Récupérer la configuration actuelle pour le moteur SNPGP
+      const payload = getPayload()
+      await SimulationService.startSimulation(id, payload.config)
+      
       toast.success('Simulation lancée avec succès')
     } catch (error: any) {
       toast.error(`Échec du lancement: ${error.message}`)
