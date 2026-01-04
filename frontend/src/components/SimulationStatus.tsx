@@ -99,9 +99,16 @@ export function SimulationStatus({
       />
       
       {status === 'failed' && (
-        <div className="flex items-center gap-2 text-xs text-red-600 dark:text-red-400">
-          <AlertCircle className="w-3 h-3" />
-          <span>Simulation failed. Check logs for details.</span>
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 dark:bg-red-950 dark:border-red-900 dark:text-red-300">
+          <p className="font-medium mb-1 flex items-center gap-1">
+            <AlertCircle className="w-4 h-4" />
+            Suggestion de Correction (CFD-Copilot)
+          </p>
+          <p>La simulation a échoué. Cela peut être dû à une non-convergence ou à des conditions aux limites extrêmes. Veuillez essayer :</p>
+          <ul className="list-disc list-inside ml-4 mt-1 space-y-0.5">
+            <li>Augmenter la **densité du maillage** (passer à 'Medium' ou 'High' dans l'onglet Configuration).</li>
+            <li>Vérifier la cohérence des **conditions aux limites** (e.g., Température initiale vs. ambiante).</li>
+          </ul>
         </div>
       )}
     </div>
