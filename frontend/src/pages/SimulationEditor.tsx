@@ -57,6 +57,7 @@ export default function SimulationEditor() {
       { id: 'aluminum-6061', name: 'Aluminum 6061', category: 'metal' },
       { id: 'copper', name: 'Copper', category: 'metal' },
       { id: 'stainless-304', name: 'Stainless Steel 304', category: 'metal' },
+      { id: 'al-er-zr-ni-am', name: 'Al-Er-Zr-Ni (AM High-Temp)', category: 'additive' },
     ])
   }, [])
 
