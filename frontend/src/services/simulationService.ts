@@ -66,7 +66,8 @@ export class SimulationService {
     let riskScore = Math.min(100, (tempDifference / maxTempDiff) * 100);
     
     // Ajustement basé sur le matériau (selon l'article sur les alliages AM)
-    if (config.material_id === 'al-er-zr-ni-am') {
+    // Note: On vérifie l'ID ou le nom si l'ID est un UUID
+    if (config.material_id === 'al-er-zr-ni-am' || config.material_id === 'additive-high-temp') {
       // Si le matériau est le nouvel alliage haute performance, réduire le risque de 20%
       // car il est conçu pour résister à de fortes contraintes thermiques.
       riskScore *= 0.8; 
