@@ -43,7 +43,7 @@ export class SimulationService {
         mesh_density: params.config.mesh_density,
         status: 'pending',
         progress: 0,
-        // NOUVEAU: Ajout du score de risque initial basé sur la méthodologie de l'article
+        // NOUVEAU: Ajout du score de risque initial basé sur la méthodologie SNPGP (pasted_content.txt)
         risk_analysis_score: SimulationService.calculateInitialRisk(params.config)
       })
       .select()
@@ -53,7 +53,7 @@ export class SimulationService {
     return simulation
   }
 
-  // NOUVELLE MÉTHODE: Calcul du score de risque initial (basé sur l'article)
+  // NOUVELLE MÉTHODE: Calcul du score de risque initial (basé sur SNPGP & Sidecar)
   static calculateInitialRisk(config: SimulationConfig): number {
     // Calcul de base: basé sur la différence de température (risque thermique)
     const initialTemp = parseFloat(config.boundary_conditions.initial_temp);
@@ -73,8 +73,14 @@ export class SimulationService {
     }
     
     // Ajustement basé sur la densité du maillage (une faible densité peut masquer des risques)
+    // Selon le document, les géométries complexes nécessitent un maillage adaptatif.
     if (config.mesh_density === 'low') {
-      riskScore += 10; // Augmenter le risque si la précision est faible
+      riskScore += 15; // Augmenter le risque si la précision est faible
+    }
+    
+    // Détection de conditions hors distribution (Domain Shift potentiel)
+    if (tempDifference > 400 || parseFloat(config.boundary_conditions.fluid_velocity) > 10) {
+      riskScore += 20; // Risque d'incertitude SNPGP élevé
     }
     
     return Math.round(Math.min(100, riskScore));
