@@ -118,7 +118,7 @@ export class SimulationService {
     return simulation
   }
 
-  static async startSimulation(simulationId: string) {
+  static async startSimulation(simulationId: string, config: any) {
     const { data: { session } } = await supabase.auth.getSession()
     
     if (!session) {
@@ -135,7 +135,10 @@ export class SimulationService {
     try {
       const { data, error } = await supabase.functions.invoke('simulate', {
         method: 'POST',
-        body: { simulationId },
+        body: { 
+          simulationId,
+          config // Requis par le backend SNPGP
+        },
         headers: {
           Authorization: `Bearer ${session.access_token}`
         }
