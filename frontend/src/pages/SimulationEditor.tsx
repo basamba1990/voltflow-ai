@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useLocation } from 'wouter'
 import { SimulationService } from '@/services/simulationService'
 import { useSimulationRealtime } from '@/hooks/useSimulationRealtime'
+import { useMaterials } from '@/hooks/useMaterials'
 import { SimulationStatus } from '@/components/SimulationStatus'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -24,19 +25,21 @@ import {
   Thermometer,
   Wind,
   Zap,
-  Loader2
+  Loader2,
+  AlertCircle
 } from 'lucide-react'
 
 export default function SimulationEditor() {
   const [, setLocation] = useLocation()
   const { id } = useParams<{ id: string }>()
   const { simulation, progress, status } = useSimulationRealtime(id)
+  const { data: materialsData, isLoading: isLoadingMaterials } = useMaterials()
   
   // Basic Config
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [geometryType, setGeometryType] = useState('tube')
-  const [materialId, setMaterialId] = useState('aluminum-6061')
+  const [materialId, setMaterialId] = useState('')
   const [meshDensity, setMeshDensity] = useState<'low' | 'medium' | 'high'>('low')
   
   // Thermal Conditions
@@ -50,23 +53,22 @@ export default function SimulationEditor() {
   const [fluidVelocity, setFluidVelocity] = useState('1.5')
   
   const [isLoading, setIsLoading] = useState(false)
-  const [materials, setMaterials] = useState<Array<{ id: string; name: string; category: string }>>([])
 
+  // Initialiser materialId quand les matériaux sont chargés
   useEffect(() => {
-    setMaterials([
-      { id: 'aluminum-6061', name: 'Aluminum 6061', category: 'metal' },
-      { id: 'copper', name: 'Copper', category: 'metal' },
-      { id: 'stainless-304', name: 'Stainless Steel 304', category: 'metal' },
-      { id: 'al-er-zr-ni-am', name: 'Al-Er-Zr-Ni (AM High-Temp)', category: 'additive' },
-    ])
-  }, [])
+    if (materialsData && materialsData.length > 0 && !materialId && !id) {
+      // Par défaut, on cherche l'aluminium 6061 ou le premier de la liste
+      const defaultMaterial = materialsData.find(m => m.id === 'aluminum-6061' || m.name.includes('Aluminum')) || materialsData[0]
+      setMaterialId(defaultMaterial.id)
+    }
+  }, [materialsData, materialId, id])
 
   useEffect(() => {
     if (id && simulation) {
       setName(simulation.name)
       setDescription(simulation.description || '')
       setGeometryType(simulation.geometry_type)
-      setMaterialId(simulation.material_id || 'aluminum-6061')
+      setMaterialId(simulation.material_id || '')
       setMeshDensity(simulation.mesh_density as any)
       
       const bc = simulation.boundary_conditions as any
@@ -105,6 +107,11 @@ export default function SimulationEditor() {
       toast.error('Le nom de la simulation est requis')
       return
     }
+
+    if (!materialId) {
+      toast.error('Veuillez sélectionner un matériau')
+      return
+    }
     
     // VALIDATION CRITIQUE: Vérifier les champs numériques pour éviter l'erreur 22P02 (Invalid Text Representation)
     const numericFields = [
@@ -121,7 +128,6 @@ export default function SimulationEditor() {
         return;
       }
     }
-    // FIN VALIDATION CRITIQUE
     
     try {
       setIsLoading(true)
@@ -152,7 +158,6 @@ export default function SimulationEditor() {
       setIsLoading(true)
       toast.info('Démarrage de la simulation PINN...')
       
-      // Récupérer la configuration actuelle pour le moteur SNPGP
       const payload = getPayload()
       await SimulationService.startSimulation(id, payload.config)
       
@@ -241,10 +246,14 @@ export default function SimulationEditor() {
                     </div>
                     <div className="space-y-2">
                       <Label>Matériau</Label>
-                      <Select value={materialId} onValueChange={setMaterialId}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
+                      <Select value={materialId} onValueChange={setMaterialId} disabled={isLoadingMaterials}>
+                        <SelectTrigger>
+                          <SelectValue placeholder={isLoadingMaterials ? "Chargement..." : "Sélectionner un matériau"} />
+                        </SelectTrigger>
                         <SelectContent>
-                          {materials.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                          {materialsData?.map(m => (
+                            <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
                     </div>
