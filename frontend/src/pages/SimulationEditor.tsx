@@ -348,23 +348,26 @@ export default function SimulationEditor() {
             {status === 'completed' && simulation?.results && (
               <CardContent className="space-y-2 pt-0">
                 <Separator className="bg-primary/10" />
-                <h4 className="text-sm font-medium text-primary">Analyse de Fiabilité (SNPGP)</h4>
+                <h4 className="text-sm font-medium text-primary">Analyse de Fiabilité (SNPGP & Sidecar)</h4>
                 <div className="flex justify-between text-xs">
-                  <span className="font-medium">Score d'Incertitude:</span>
+                  <span className="font-medium">Incertitude (Variance GP):</span>
                   <span className={simulation.results.uncertainty_score > 0.2 ? 'text-red-500 font-bold' : 'text-green-500'}>
                     {(simulation.results.uncertainty_score * 100).toFixed(2)}%
                   </span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="font-medium">Alerte Domaine Shift:</span>
+                  <span className="font-medium">Détection Domain Shift:</span>
                   <span className={simulation.results.domain_shift_alert ? 'text-red-500 font-bold' : 'text-green-500'}>
-                    {simulation.results.domain_shift_alert ? 'OUI' : 'NON'}
+                    {simulation.results.domain_shift_alert ? 'DÉTECTÉ' : 'NORMAL'}
                   </span>
                 </div>
                 {simulation.results.domain_shift_alert && (
-                  <p className="text-xs text-red-500 pt-1">
-                    ⚠️ **Alerte :** Le modèle a détecté un changement significatif dans les conditions de simulation (Domaine Shift). Les résultats peuvent être moins fiables.
-                  </p>
+                  <div className="mt-2 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded text-[10px] text-red-600 dark:text-red-400">
+                    <p className="font-bold flex items-center gap-1">
+                      <AlertCircle className="w-3 h-3" /> ALERTE DOMAIN SHIFT
+                    </p>
+                    <p>Les conditions d'entrée sortent de l'espace de distribution connu. Le **Sidecar** a été activé pour garantir le respect des lois physiques.</p>
+                  </div>
                 )}
               </CardContent>
             )}
