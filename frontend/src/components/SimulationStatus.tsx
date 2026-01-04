@@ -104,10 +104,11 @@ export function SimulationStatus({
             <AlertCircle className="w-4 h-4" />
             Suggestion de Correction (CFD-Copilot)
           </p>
-          <p>La simulation a échoué. Cela peut être dû à une non-convergence ou à des conditions aux limites extrêmes. Veuillez essayer :</p>
+          <p>La simulation a échoué ou présente une forte incertitude. Selon les principes **SNPGP & Sidecar**, veuillez essayer :</p>
           <ul className="list-disc list-inside ml-4 mt-1 space-y-0.5">
-            <li>Augmenter la **densité du maillage** (passer à 'Medium' ou 'High' dans l'onglet Configuration).</li>
-            <li>Vérifier la cohérence des **conditions aux limites** (e.g., Température initiale vs. ambiante).</li>
+            <li>**Maillage Adaptatif** : Augmentez la densité du maillage pour les géométries complexes.</li>
+            <li>**Contraintes Physiques** : Vérifiez que vos conditions aux limites respectent les lois de conservation (masse/énergie).</li>
+            <li>**Ajustement Sidecar** : Si vous utilisez un matériau personnalisé, assurez-vous que ses propriétés thermiques sont dans une plage réaliste.</li>
           </ul>
         </div>
       )}
