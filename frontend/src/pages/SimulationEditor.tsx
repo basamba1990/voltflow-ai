@@ -1,340 +1,229 @@
-// frontend/src/pages/SimulationEditor.tsx
-import { useState, useEffect } from 'react'
-import { useParams, useLocation } from 'wouter'
-import { SimulationService } from '@/services/simulationService'
-import { useSimulationRealtime } from '@/hooks/useSimulationRealtime'
-import { SimulationStatus } from '@/components/SimulationStatus'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Textarea } from '@/components/ui/textarea'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
-import { toast } from 'sonner'
-import { 
-  Save, 
-  Play, 
-  Upload, 
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useLocation } from 'wouter';
+import { toast } from 'sonner';
+import {
+  Save,
+  Play,
   Download,
   Trash2,
-  Settings,
-  BarChart3,
   Thermometer,
-  Wind,
-  Zap,
-  Loader2
-} from 'lucide-react'
+  Loader2,
+  AlertCircle,
+  ChevronLeft,
+  UploadCloud,
+  Box
+} from 'lucide-react';
+
+// Services et hooks
+import SimulationService from '@/services/simulation.service';
+import { useSimulation } from '@/hooks/useSimulation';
+import { useMaterials } from '@/hooks/useMaterials';
+import { useAuth } from '@/contexts/AuthContext';
+
+// Composants UI
+import { SimulationStatus } from '@/components/SimulationStatus';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { VTKViewer } from '@/components/Viewers/VTKViewer';
 
 export default function SimulationEditor() {
-  const [, setLocation] = useLocation()
-  const { id } = useParams<{ id: string }>()
-  const { simulation, progress, status } = useSimulationRealtime(id)
+  const [, setLocation] = useLocation();
+  const { id } = useParams<{ id: string }>();
+  const { simulation, results, isRunning, progress, startSimulation, refresh } = useSimulation(id || '', { realtime: true });
+  const { data: materialsDataRaw } = useMaterials();
+  const { user } = useAuth();
   
-  // Basic Config
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [geometryType, setGeometryType] = useState('tube')
-  const [materialId, setMaterialId] = useState('aluminum-6061')
-  const [meshDensity, setMeshDensity] = useState<'low' | 'medium' | 'high'>('low')
+  const materialsData = Array.isArray(materialsDataRaw) ? materialsDataRaw : [];
   
-  // Thermal Conditions
-  const [initialTemp, setInitialTemp] = useState('200')
-  const [ambientTemp, setAmbientTemp] = useState('25')
-  const [coolingType, setCoolingType] = useState('natural_convection')
-  const [convectionCoeff, setConvectionCoeff] = useState('15')
-  
-  // Fluid Dynamics
-  const [fluidType, setFluidType] = useState('air')
-  const [fluidVelocity, setFluidVelocity] = useState('1.5')
-  
-  const [isLoading, setIsLoading] = useState(false)
-  const [materials, setMaterials] = useState<Array<{ id: string; name: string; category: string }>>([])
+  const [formData, setFormData] = useState({
+    name: '',
+    description: '',
+    geometryType: 'complex',
+    geometryConfig: { file_url: '', file_name: '' },
+    materialId: '',
+    meshDensity: 'high' as 'low' | 'medium' | 'high',
+    initialTemp: '200',
+    ambientTemp: '25',
+    solverType: 'fem_fortran'
+  });
 
-  useEffect(() => {
-    setMaterials([
-      { id: 'aluminum-6061', name: 'Aluminum 6061', category: 'metal' },
-      { id: 'copper', name: 'Copper', category: 'metal' },
-      { id: 'stainless-304', name: 'Stainless Steel 304', category: 'metal' },
-    ])
-  }, [])
+  const [isSaving, setIsSaving] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
 
   useEffect(() => {
     if (id && simulation) {
-      setName(simulation.name)
-      setDescription(simulation.description || '')
-      setGeometryType(simulation.geometry_type)
-      setMaterialId(simulation.material_id || 'aluminum-6061')
-      setMeshDensity(simulation.mesh_density as any)
-      
-      const bc = simulation.boundary_conditions as any
-      if (bc) {
-        setInitialTemp(bc.initial_temp?.toString() || '200')
-        setAmbientTemp(bc.ambient_temp?.toString() || '25')
-        setCoolingType(bc.cooling_type || 'natural_convection')
-        setConvectionCoeff(bc.convection_coeff?.toString() || '15')
-        setFluidType(bc.fluid_type || 'air')
-        setFluidVelocity(bc.fluid_velocity?.toString() || '1.5')
-      }
+      const bc = simulation.boundary_conditions as any;
+      setFormData({
+        name: simulation.name || '',
+        description: simulation.description || '',
+        geometryType: simulation.geometry_type || 'complex',
+        geometryConfig: (simulation.geometry_config as any) || { file_url: '', file_name: '' },
+        materialId: simulation.material_id || '',
+        meshDensity: simulation.mesh_density_level || 'high',
+        initialTemp: bc?.initial_temp?.toString() || '200',
+        ambientTemp: bc?.ambient_temp?.toString() || '25',
+        solverType: simulation.solver_type || 'fem_fortran'
+      });
     }
-  }, [id, simulation])
+  }, [id, simulation]);
 
-  const getPayload = () => ({
-    name,
-    description,
-    geometryType,
-    config: {
-      geometry_config: { type: geometryType },
-      material_id: materialId,
-      mesh_density: meshDensity,
-      boundary_conditions: {
-        initial_temp: parseFloat(initialTemp),
-        ambient_temp: parseFloat(ambientTemp),
-        cooling_type: coolingType,
-        convection_coeff: parseFloat(convectionCoeff),
-        fluid_type: fluidType,
-        fluid_velocity: parseFloat(fluidVelocity)
-      }
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
+
+    try {
+      setUploadingFile(true);
+      const result = await SimulationService.uploadGeometry({ file, userId: user.id, simulationId: id });
+      setFormData(prev => ({
+        ...prev,
+        geometryConfig: { file_url: result.fileUrl, file_name: result.fileName }
+      }));
+      toast.success("Fichier géométrique téléchargé");
+    } catch (error: any) {
+      toast.error("Erreur upload: " + error.message);
+    } finally {
+      setUploadingFile(false);
     }
-  })
+  };
 
   const handleSave = async () => {
-    if (!name) {
-      toast.error('Le nom de la simulation est requis')
-      return
-    }
-    
+    if (!formData.name.trim()) return toast.error('Nom requis');
     try {
-      setIsLoading(true)
-      const payload = getPayload()
-      
+      setIsSaving(true);
+      const payload = {
+        name: formData.name,
+        description: formData.description,
+        geometryType: formData.geometryType,
+        config: {
+          geometry_config: formData.geometryConfig,
+          material_id: formData.materialId,
+          mesh_density: formData.meshDensity,
+          boundary_conditions: {
+            initial_temp: parseFloat(formData.initialTemp),
+            ambient_temp: parseFloat(formData.ambientTemp)
+          },
+          solver_type: formData.solverType
+        }
+      };
+
       if (id) {
-        await SimulationService.updateSimulation(id, payload)
-        toast.success('Simulation mise à jour')
+        await SimulationService.updateSimulation(id, payload);
+        toast.success('Mis à jour');
       } else {
-        const newSim = await SimulationService.createSimulation(payload)
-        toast.success('Simulation créée')
-        setLocation(`/simulation/${newSim.id}`)
+        const newSim = await SimulationService.createSimulation(payload);
+        setLocation(`/simulation/${newSim.id}`);
       }
     } catch (error: any) {
-      toast.error(`Erreur: ${error.message}`)
+      toast.error(error.message);
     } finally {
-      setIsLoading(false)
+      setIsSaving(false);
     }
-  }
-
-  const handleRunSimulation = async () => {
-    if (!id) {
-      toast.error('Veuillez d\'abord enregistrer la simulation')
-      return
-    }
-
-    try {
-      setIsLoading(true)
-      toast.info('Démarrage de la simulation PINN...')
-      await SimulationService.startSimulation(id)
-      toast.success('Simulation lancée avec succès')
-    } catch (error: any) {
-      toast.error(`Échec du lancement: ${error.message}`)
-    } finally {
-      setIsLoading(false)
-    }
-  }
-
-  const handleDelete = async () => {
-    if (!id || !window.confirm('Supprimer cette simulation ?')) return
-    try {
-      setIsLoading(true)
-      await SimulationService.deleteSimulation(id)
-      toast.success('Simulation supprimée')
-      setLocation('/dashboard')
-    } catch (error: any) {
-      toast.error(error.message)
-    } finally {
-      setIsLoading(false)
-    }
-  }
+  };
 
   return (
-    <div className="container mx-auto p-6 space-y-6 bg-background text-foreground min-h-screen">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold flex items-center gap-2">
-            <Zap className="text-primary w-8 h-8" />
-            {id ? 'Modifier la Simulation' : 'Nouvelle Simulation'}
-          </h1>
-          <p className="text-muted-foreground">
-            Configurez et lancez vos simulations thermiques haute performance
-          </p>
-        </div>
-        
-        <div className="flex items-center gap-3">
-          {id && (
-            <Button variant="outline" onClick={handleDelete} disabled={isLoading || status === 'running'}>
-              <Trash2 className="w-4 h-4 mr-2" />
-              Supprimer
+    <div className="min-h-screen bg-black text-white p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" onClick={() => setLocation('/dashboard')}>
+              <ChevronLeft className="w-4 h-4 mr-2" /> Retour
             </Button>
-          )}
-          <Button onClick={handleSave} disabled={isLoading || status === 'running'} className="bg-primary hover:bg-primary/90">
-            {isLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-            {id ? 'Mettre à jour' : 'Enregistrer'}
-          </Button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          <Tabs defaultValue="config" className="w-full">
-            <TabsList className="grid w-full grid-cols-3 bg-card border border-border">
-              <TabsTrigger value="config">Configuration</TabsTrigger>
-              <TabsTrigger value="thermal">Thermique</TabsTrigger>
-              <TabsTrigger value="fluid">Fluide</TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="config" className="mt-4">
-              <Card className="border-border bg-card/50">
-                <CardHeader><CardTitle className="text-lg">Paramètres de base</CardTitle></CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Nom de la simulation</Label>
-                    <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Refroidissement tube Alu 6061" />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Description</Label>
-                    <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Détails du projet..." rows={2} />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label>Géométrie</Label>
-                      <Select value={geometryType} onValueChange={setGeometryType}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="tube">Tube</SelectItem>
-                          <SelectItem value="plate">Plaque</SelectItem>
-                          <SelectItem value="coil">Serpentin</SelectItem>
-                          <SelectItem value="custom">Custom (STL/STEP)</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Matériau</Label>
-                      <Select value={materialId} onValueChange={setMaterialId}>
-                        <SelectTrigger><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          {materials.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Précision / Vitesse (Moteur PINN)</Label>
-                    <Select value={meshDensity} onValueChange={(v: any) => setMeshDensity(v)}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="low">Low (Fast - Secondes)</SelectItem>
-                        <SelectItem value="medium">Medium (Balanced)</SelectItem>
-                        <SelectItem value="high">High (Accurate - Minutes)</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="thermal" className="mt-4">
-              <Card className="border-border bg-card/50">
-                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Thermometer className="w-5 h-5 text-primary" /> Conditions Thermiques</CardTitle></CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label>Température initiale (°C)</Label>
-                      <Input type="number" value={initialTemp} onChange={(e) => setInitialTemp(e.target.value)} />
-                    </div>
-                    <div className="space-y-2">
-                      <Label>Température ambiante (°C)</Label>
-                      <Input type="number" value={ambientTemp} onChange={(e) => setAmbientTemp(e.target.value)} />
-                    </div>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Type de refroidissement</Label>
-                    <Select value={coolingType} onValueChange={setCoolingType}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="natural_convection">Convection naturelle</SelectItem>
-                        <SelectItem value="forced_convection">Convection forcée</SelectItem>
-                        <SelectItem value="radiation">Radiation</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Coefficient de convection (W/m²·K)</Label>
-                    <Input type="number" value={convectionCoeff} onChange={(e) => setConvectionCoeff(e.target.value)} />
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            <TabsContent value="fluid" className="mt-4">
-              <Card className="border-border bg-card/50">
-                <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Wind className="w-5 h-5 text-secondary" /> Dynamique Fluide</CardTitle></CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="space-y-2">
-                    <Label>Fluide</Label>
-                    <Select value={fluidType} onValueChange={setFluidType}>
-                      <SelectTrigger><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="air">Air</SelectItem>
-                        <SelectItem value="water">Eau</SelectItem>
-                        <SelectItem value="oil">Huile industrielle</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Vitesse du fluide (m/s)</Label>
-                    <Input type="number" step="0.1" value={fluidVelocity} onChange={(e) => setFluidVelocity(e.target.value)} />
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
+            <h1 className="text-2xl font-bold">{id ? 'Modifier Simulation' : 'Nouvelle Simulation'}</h1>
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={handleSave} disabled={isSaving}>
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+              Sauvegarder
+            </Button>
+            <Button onClick={startSimulation} disabled={isRunning || !id}>
+              {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+              Lancer
+            </Button>
+          </div>
         </div>
 
-        <div className="space-y-6">
-          <Card className="border-primary/20 bg-primary/5">
-            <CardHeader><CardTitle className="text-lg">Statut de la Simulation</CardTitle></CardHeader>
-            <CardContent className="space-y-4">
-              <SimulationStatus status={status as any} progress={progress} />
-              <Separator className="bg-primary/10" />
-              <div className="space-y-2">
-                <h4 className="text-sm font-medium">Actions</h4>
-                <Button 
-                  className="w-full bg-primary hover:bg-primary/90 text-white shadow-lg shadow-primary/20" 
-                  onClick={handleRunSimulation}
-                  disabled={isLoading || !id || status === 'running'}
-                >
-                  {status === 'running' ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-                  Lancer la Simulation
-                </Button>
-                {status === 'completed' && (
-                  <Button variant="outline" className="w-full" onClick={() => SimulationService.getSimulationResults(id!)}>
-                    <Download className="w-4 h-4 mr-2" /> Télécharger les résultats
-                  </Button>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1 space-y-6">
+            <Card className="bg-zinc-900 border-zinc-800">
+              <CardHeader><CardTitle>Configuration</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Nom</Label>
+                  <Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} className="bg-zinc-800 border-zinc-700" />
+                </div>
+                <div className="space-y-2">
+                  <Label>Géométrie (STL/STEP)</Label>
+                  <div className="flex items-center gap-2">
+                    <Input type="file" onChange={handleFileUpload} className="hidden" id="geo-upload" />
+                    <Button asChild variant="secondary" className="w-full">
+                      <label htmlFor="geo-upload" className="cursor-pointer">
+                        {uploadingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
+                        {formData.geometryConfig.file_name || 'Choisir un fichier'}
+                      </label>
+                    </Button>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <Label>Matériau</Label>
+                  <Select value={formData.materialId} onValueChange={v => setFormData({...formData, materialId: v})}>
+                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                      <SelectValue placeholder="Sélectionner" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {materialsData.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="lg:col-span-2 space-y-6">
+            <Tabs defaultValue="visualizer" className="w-full">
+              <TabsList className="bg-zinc-900 border-zinc-800">
+                <TabsTrigger value="visualizer"><Box className="w-4 h-4 mr-2" /> Visualisation 3D</TabsTrigger>
+                <TabsTrigger value="results"><Thermometer className="w-4 h-4 mr-2" /> Résultats</TabsTrigger>
+              </TabsList>
+              <TabsContent value="visualizer" className="mt-4">
+                {results?.vtk_file_url ? (
+                  <VTKViewer dataUrl={results.vtk_file_url} temperatureData={results.temperature_field} />
+                ) : (
+                  <div className="h-[600px] bg-zinc-900 rounded-lg border border-zinc-800 flex items-center justify-center text-zinc-500">
+                    {isRunning ? "Simulation en cours..." : "Lancez la simulation pour voir le rendu 3D"}
+                  </div>
                 )}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-border bg-card/50">
-            <CardHeader><CardTitle className="text-sm font-medium">Moteur IA VoltFlow</CardTitle></CardHeader>
-            <CardContent className="text-xs text-muted-foreground space-y-2">
-              <p>✔ Physics-Informed Neural Networks (PINNs)</p>
-              <p>✔ Résolution couplage convection / conduction</p>
-              <p>✔ Surveillance de convergence en temps réel</p>
-            </CardContent>
-          </Card>
+              </TabsContent>
+              <TabsContent value="results">
+                <Card className="bg-zinc-900 border-zinc-800">
+                  <CardContent className="pt-6">
+                    {results ? (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-4 bg-zinc-800 rounded-lg">
+                          <div className="text-sm text-zinc-400">Température Max</div>
+                          <div className="text-2xl font-bold text-red-500">{results.max_temperature}°C</div>
+                        </div>
+                        <div className="p-4 bg-zinc-800 rounded-lg">
+                          <div className="text-sm text-zinc-400">Fidélité</div>
+                          <div className="text-2xl font-bold text-green-500">{(1 - results.uncertainty_score) * 100}%</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-12 text-zinc-500">Aucun résultat disponible</div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          </div>
         </div>
       </div>
     </div>
-  )
+  );
 }
