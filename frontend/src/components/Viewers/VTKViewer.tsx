@@ -1,7 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  vtkFullScreenRenderWindow,
-} from '@kitware/vtk.js/Rendering/Core';
+import vtkFullScreenRenderWindow from '@kitware/vtk.js/Rendering/Misc/FullScreenRenderWindow';
 import vtkMapper from '@kitware/vtk.js/Rendering/Core/Mapper';
 import vtkActor from '@kitware/vtk.js/Rendering/Core/Actor';
 import vtkScalarBarActor from '@kitware/vtk.js/Rendering/Core/ScalarBarActor';
@@ -49,7 +47,7 @@ export const VTKViewer: React.FC<VTKViewerProps> = ({
       const mapper = vtkMapper.newInstance();
       mapper.setInputData(polyData);
       mapper.setScalarVisibility(true);
-      
+
       const minTemp = temperatureData ? Math.min(...temperatureData) : 20;
       const maxTemp = temperatureData ? Math.max(...temperatureData) : 100;
       mapper.setScalarRange(minTemp, maxTemp);
@@ -66,7 +64,7 @@ export const VTKViewer: React.FC<VTKViewerProps> = ({
       const scalarBar = vtkScalarBarActor.newInstance();
       scalarBar.setLookupTable(lut);
       scalarBar.setTitle('Temperature (°C)');
-      
+
       const plane = vtkPlane.newInstance();
       plane.setOrigin(0, 0, 0);
       plane.setNormal(1, 0, 0);
@@ -93,8 +91,8 @@ export const VTKViewer: React.FC<VTKViewerProps> = ({
         const pos = interactor.getEventPosition();
         const picker = vtkCellPicker.newInstance();
         picker.pick(pos[0], pos[1], 0, renderer);
-
         const pickedPoint = picker.getPickPosition();
+
         if (pickedPoint && onPointSelect) {
           const pointId = picker.getPointId();
           if (pointId >= 0 && temperatureData) {
@@ -118,22 +116,21 @@ export const VTKViewer: React.FC<VTKViewerProps> = ({
   }, [dataUrl, temperatureData, onPointSelect]);
 
   return (
-    <div className="relative w-full h-[600px] border border-gray-800 rounded-lg overflow-hidden">
+    <div className="relative w-full h-full">
       {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80 z-10">
-          <div className="text-white flex flex-col items-center">
-            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mb-4"></div>
-            Loading 3D visualization...
-          </div>
+        <div className="absolute inset-0 flex items-center justify-center bg-gray-900/80">
+          <div className="text-white text-lg">Loading 3D visualization...</div>
         </div>
       )}
       <div ref={containerRef} className="w-full h-full" />
-      <div className="absolute bottom-4 left-4 bg-gray-900/70 p-3 rounded-lg text-white text-xs z-10">
-        <div className="font-bold mb-1">Controls:</div>
-        <div>• Left drag: Rotate</div>
-        <div>• Right drag: Pan</div>
-        <div>• Scroll: Zoom</div>
-        <div>• Click: Select point</div>
+      <div className="absolute bottom-4 left-4 text-sm text-gray-300 bg-gray-900/70 p-3 rounded">
+        <p className="font-semibold mb-1">Controls:</p>
+        <ul className="space-y-1">
+          <li>• Left drag: Rotate</li>
+          <li>• Right drag: Pan</li>
+          <li>• Scroll: Zoom</li>
+          <li>• Click: Select point</li>
+        </ul>
       </div>
     </div>
   );
