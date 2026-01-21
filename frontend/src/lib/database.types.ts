@@ -107,13 +107,15 @@ export interface Database {
           geometry_config: Json
           material_id: string | null
           boundary_conditions: Json
-          mesh_density: string
-          status: string
+          mesh_density: 'low' | 'medium' | 'high'
+          status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
           progress: number
           estimated_duration: number | null
           started_at: string | null
           completed_at: string | null
+          error_message: string | null
           created_at: string
+          updated_at: string
         }
         Insert: {
           id?: string
@@ -124,13 +126,15 @@ export interface Database {
           geometry_config?: Json
           material_id?: string | null
           boundary_conditions?: Json
-          mesh_density?: string
-          status?: string
+          mesh_density?: 'low' | 'medium' | 'high'
+          status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
           progress?: number
           estimated_duration?: number | null
           started_at?: string | null
           completed_at?: string | null
+          error_message?: string | null
           created_at?: string
+          updated_at?: string
         }
         Update: {
           id?: string
@@ -141,13 +145,15 @@ export interface Database {
           geometry_config?: Json
           material_id?: string | null
           boundary_conditions?: Json
-          mesh_density?: string
-          status?: string
+          mesh_density?: 'low' | 'medium' | 'high'
+          status?: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled'
           progress?: number
           estimated_duration?: number | null
           started_at?: string | null
           completed_at?: string | null
+          error_message?: string | null
           created_at?: string
+          updated_at?: string
         }
       }
       simulation_results: {
@@ -160,8 +166,12 @@ export interface Database {
           max_temperature: number | null
           min_temperature: number | null
           pressure_drop: number | null
+          uncertainty_score: number | null
+          domain_shift_alert: boolean | null
           thermal_efficiency: number | null
           convergence_metrics: Json | null
+          fidelity_score: number | null
+          methodology: string | null
           result_files: Json | null
           visualization_config: Json | null
           created_at: string
@@ -175,8 +185,12 @@ export interface Database {
           max_temperature?: number | null
           min_temperature?: number | null
           pressure_drop?: number | null
+          uncertainty_score?: number | null
+          domain_shift_alert?: boolean | null
           thermal_efficiency?: number | null
           convergence_metrics?: Json | null
+          fidelity_score?: number | null
+          methodology?: string | null
           result_files?: Json | null
           visualization_config?: Json | null
           created_at?: string
@@ -190,8 +204,12 @@ export interface Database {
           max_temperature?: number | null
           min_temperature?: number | null
           pressure_drop?: number | null
+          uncertainty_score?: number | null
+          domain_shift_alert?: boolean | null
           thermal_efficiency?: number | null
           convergence_metrics?: Json | null
+          fidelity_score?: number | null
+          methodology?: string | null
           result_files?: Json | null
           visualization_config?: Json | null
           created_at?: string
