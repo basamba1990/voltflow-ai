@@ -1,322 +1,543 @@
-import { supabase, handleSupabaseError } from '@/lib/supabase'
-import type { Database } from '@/lib/database.types'
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useLocation } from 'wouter';
+import { toast } from 'sonner';
+import {
+  Save,
+  Play,
+  Download,
+  Trash2,
+  Thermometer,
+  Loader2,
+  AlertCircle,
+  ChevronLeft,
+  UploadCloud,
+  Box,
+  X
+} from 'lucide-react';
 
-export type Material = Database['public']['Tables']['materials']['Row']
-export type MaterialInsert = Database['public']['Tables']['materials']['Insert']
-export type MaterialUpdate = Database['public']['Tables']['materials']['Update']
+// Services et hooks
+import SimulationService, { Simulation, SimulationConfig } from '@/services/simulation.service';
+import { useSimulation } from '@/hooks/useSimulation';
+import { useMaterials } from '@/hooks/useMaterials';
+import { useAuth } from '@/contexts/AuthContext';
 
-export interface MaterialProperties {
-  density: number;            // kg/m³
-  conductivity: number;       // W/(m·K)
-  specific_heat: number;      // J/(kg·K)
-  youngs_modulus: number;     // GPa
-  poisson_ratio: number;      // Dimensionless
-  thermal_expansion: number;  // 10^-6/K
-  emissivity: number;         // Dimensionless
+// Composants UI
+import { SimulationStatus } from '@/components/SimulationStatus';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import IndustrialVTKViewer, { IndustrialField } from '@/components/Viewers/IndustrialVTKViewer'; // Import du nouveau Viewer
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+
+// Définition des types pour le formulaire
+interface FormData {
+  name: string;
+  description: string;
+  geometryType: string;
+  geometryConfig: { file_url: string; file_name: string; };
+  materialId: string;
+  meshDensity: 'low' | 'medium' | 'high';
+  initialTemp: string;
+  ambientTemp: string;
+  coolingType: 'natural_convection' | 'forced_convection' | 'radiation';
+  convectionCoeff: string;
+  fluidType: 'air' | 'water' | 'oil';
+  fluidVelocity: string;
+  solverType: string;
 }
 
-export class MaterialService {
-  private static cache = new Map<string, { data: Material[]; timestamp: number }>()
-  private static CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
+export default function SimulationEditor() {
+  const [, setLocation] = useLocation();
+  const { id } = useParams<{ id: string }>();
+  const { 
+    simulation, 
+    results, 
+    isRunning, 
+    progress, 
+    startSimulation, 
+    cancelSimulation,
+    deleteSimulation,
+    refresh 
+  } = useSimulation(id || '', { realtime: true });
+  const { data: materialsDataRaw } = useMaterials();
+  const { user } = useAuth();
+  
+  const materialsData = Array.isArray(materialsDataRaw) ? materialsDataRaw : [];
+  
+  const [formData, setFormData] = useState<FormData>({
+    name: '',
+    description: '',
+    geometryType: 'complex',
+    geometryConfig: { file_url: '', file_name: '' },
+    materialId: '',
+    meshDensity: 'high',
+    initialTemp: '200',
+    ambientTemp: '25',
+    coolingType: 'natural_convection',
+    convectionCoeff: '10',
+    fluidType: 'air',
+    fluidVelocity: '0',
+    solverType: 'fem_fortran'
+  });
 
-  static async getMaterials(options?: {
-    refresh?: boolean;
-    limit?: number;
-    category?: string;
-  }): Promise<Material[]> {
-    const cacheKey = 'all_materials'
-    const now = Date.now()
-    
-    // Vérifier le cache
-    if (!options?.refresh && this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey)!
-      if (now - cached.timestamp < this.CACHE_DURATION) {
-        return cached.data
-      }
+  const [isSaving, setIsSaving] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+
+  // Synchronisation des données de la simulation avec le formulaire
+  useEffect(() => {
+    if (id && simulation) {
+      const bc = simulation.boundary_conditions as SimulationConfig['boundary_conditions'];
+      const geo = simulation.geometry_config as SimulationConfig['geometry_config'];
+      
+      setFormData({
+        name: simulation.name || '',
+        description: simulation.description || '',
+        geometryType: simulation.geometry_type || 'complex',
+        geometryConfig: geo || { file_url: '', file_name: '' },
+        materialId: simulation.material_id || '',
+        meshDensity: simulation.mesh_density as 'low' | 'medium' | 'high' || 'high',
+        initialTemp: bc?.initial_temp?.toString() || '200',
+        ambientTemp: bc?.ambient_temp?.toString() || '25',
+        coolingType: bc?.cooling_type || 'natural_convection',
+        convectionCoeff: bc?.convection_coeff?.toString() || '10',
+        fluidType: bc?.fluid_type || 'air',
+        fluidVelocity: bc?.fluid_velocity?.toString() || '0',
+        solverType: (simulation as any).solver_type || 'fem_fortran'
+      });
     }
+  }, [id, simulation]);
+
+  // Gestion de l'upload de fichier
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
 
     try {
-      let query = supabase
-        .from('materials')
-        .select('*')
-        .order('name', { ascending: true })
-        .order('created_at', { ascending: false })
-
-      if (options?.limit) {
-        query = query.limit(options.limit)
-      }
-
-      if (options?.category) {
-        query = query.eq('category', options.category)
-      }
-
-      const { data, error } = await query
-
-      if (error) {
-        const supabaseError = handleSupabaseError(error, 'getMaterials', options)
-        throw new Error(supabaseError.userMessage || `Failed to fetch materials: ${error.message}`)
-      }
-
-      const materials = data || []
-      
-      // Mettre en cache
-      this.cache.set(cacheKey, { data: materials, timestamp: now })
-      
-      // Mettre en cache individuellement
-      materials.forEach(material => {
-        this.cache.set(`material_${material.id}`, { 
-          data: [material], 
-          timestamp: now 
-        })
-      })
-
-      return materials
+      setUploadingFile(true);
+      const result = await SimulationService.uploadGeometry({ file, userId: user.id, simulationId: id });
+      setFormData(prev => ({
+        ...prev,
+        geometryConfig: { file_url: result.fileUrl, file_name: result.fileName }
+      }));
+      toast.success("Fichier géométrique téléchargé");
     } catch (error: any) {
-      console.error('❌ getMaterials error:', error)
-      
-      // En cas d'erreur, essayer de retourner le cache même si expiré
-      if (this.cache.has(cacheKey)) {
-        const cached = this.cache.get(cacheKey)!
-        console.warn('⚠️ Returning cached materials due to error')
-        return cached.data
-      }
-      
-      throw error
+      toast.error("Erreur upload: " + error.message);
+    } finally {
+      setUploadingFile(false);
     }
-  }
+  };
 
-  static async getMaterialById(id: string, options?: { refresh?: boolean }): Promise<Material> {
-    const cacheKey = `material_${id}`
-    const now = Date.now()
+  // Gestion de la sauvegarde
+  const handleSave = async () => {
+    if (!formData.name.trim()) return toast.error('Nom requis');
+    if (!formData.materialId) return toast.error('Matériau requis');
     
-    // Vérifier le cache
-    if (!options?.refresh && this.cache.has(cacheKey)) {
-      const cached = this.cache.get(cacheKey)!
-      if (now - cached.timestamp < this.CACHE_DURATION) {
-        return cached.data[0]
-      }
-    }
-
     try {
-      const { data, error } = await supabase
-        .from('materials')
-        .select('*')
-        .eq('id', id)
-        .single()
-
-      if (error) {
-        if (error.code === 'PGRST116') {
-          throw new Error(`Material with ID ${id} not found`)
+      setIsSaving(true);
+      
+      const config: SimulationConfig = {
+        geometry_config: formData.geometryConfig,
+        material_id: formData.materialId,
+        mesh_density: formData.meshDensity,
+        solver_type: formData.solverType,
+        boundary_conditions: {
+          initial_temp: parseFloat(formData.initialTemp),
+          ambient_temp: parseFloat(formData.ambientTemp),
+          cooling_type: formData.coolingType,
+          convection_coeff: parseFloat(formData.convectionCoeff),
+          fluid_type: formData.fluidType,
+          fluid_velocity: parseFloat(formData.fluidVelocity),
         }
-        const supabaseError = handleSupabaseError(error, 'getMaterialById', { id })
-        throw new Error(supabaseError.userMessage || `Failed to fetch material: ${error.message}`)
-      }
-
-      // Mettre en cache
-      this.cache.set(cacheKey, { data: [data], timestamp: now })
+      };
       
-      return data
+      const payload = {
+        name: formData.name,
+        description: formData.description,
+        geometryType: formData.geometryType,
+        config: config
+      };
+
+      if (id) {
+        await SimulationService.updateSimulation(id, payload);
+        toast.success('Mis à jour');
+      } else {
+        const newSim = await SimulationService.createSimulation(payload);
+        setLocation(`/simulation/${newSim.id}`);
+      }
     } catch (error: any) {
-      console.error(`❌ getMaterialById error for ${id}:`, error)
-      
-      // Essayer de retourner le cache même si expiré
-      if (this.cache.has(cacheKey)) {
-        const cached = this.cache.get(cacheKey)!
-        console.warn('⚠️ Returning cached material due to error')
-        return cached.data[0]
-      }
-      
-      throw error
+      toast.error(error.message);
+    } finally {
+      setIsSaving(false);
     }
-  }
+  };
+  
+  // Gestion de la suppression
+  const handleDelete = async () => {
+    if (!id) return;
+    try {
+      await deleteSimulation();
+      setLocation('/dashboard');
+    } catch (error) {
+      // L'erreur est déjà toastée dans useSimulation
+    }
+  };
 
-  static async getMaterialProperties(id: string): Promise<MaterialProperties> {
-    const material = await this.getMaterialById(id)
+  // Préparation des données pour le VTK Viewer
+  const vtkViewerProps = useMemo(() => {
+    if (!results || !results.vtk_file_url) return null;
+    
+    // Simuler la création des champs de données industriels
+    const fields: IndustrialField[] = [];
+    
+    // Champ de Température (obligatoire)
+    if (results.temperature_field) {
+      const values = new Float32Array(results.temperature_field);
+      fields.push({
+        id: 'temp',
+        name: 'Temperature',
+        type: 'temperature',
+        values: values,
+        units: '°C',
+        min: Math.min(...values),
+        max: Math.max(...values),
+      });
+    }
+    
+    // Champ de Contrainte (exemple)
+    if (results.stress_field) {
+      const values = new Float32Array(results.stress_field);
+      fields.push({
+        id: 'stress',
+        name: 'Von Mises Stress',
+        type: 'stress',
+        values: values,
+        units: 'MPa',
+        min: Math.min(...values),
+        max: Math.max(...values),
+      });
+    }
+    
+    // Déterminer le champ actif (par défaut, la température)
+    const active_field_id = fields.length > 0 ? fields[0].id : undefined;
     
     return {
-      density: material.density || 7800, // Valeurs par défaut pour l'acier
-      conductivity: material.conductivity || 50,
-      specific_heat: material.specific_heat || 500,
-      youngs_modulus: material.youngs_modulus || 210,
-      poisson_ratio: material.poisson_ratio || 0.3,
-      thermal_expansion: material.thermal_expansion || 12,
-      emissivity: material.emissivity || 0.8,
-    }
-  }
-
-  static async searchMaterials(query: string): Promise<Material[]> {
-    try {
-      const { data, error } = await supabase
-        .from('materials')
-        .select('*')
-        .or(`name.ilike.%${query}%,description.ilike.%${query}%,category.ilike.%${query}%`)
-        .order('name', { ascending: true })
-        .limit(20)
-
-      if (error) {
-        const supabaseError = handleSupabaseError(error, 'searchMaterials', { query })
-        throw new Error(supabaseError.userMessage || `Search failed: ${error.message}`)
+      mesh: {
+        url: results.vtk_file_url,
+        type: 'vtp' as const, // Assumer VTP pour les résultats de simulation
+      },
+      fields: fields,
+      active_field_id: active_field_id,
+      show_controls: true,
+      show_coordinates: true,
+      className: 'h-[600px] w-full',
+      simulation: {
+        engine: formData.solverType,
+        case_name: formData.name,
+        version: '1.0',
+        timestamp: new Date().toISOString(),
       }
+    };
+  }, [results, formData.solverType, formData.name]);
 
-      return data || []
-    } catch (error: any) {
-      console.error('❌ searchMaterials error:', error)
-      throw error
-    }
-  }
+  // Composant de configuration des conditions aux limites
+  const BoundaryConditionsForm = () => (
+    <CardContent className="space-y-4">
+      <div className="grid grid-cols-2 gap-4">
+        <div className="space-y-2">
+          <Label htmlFor="initialTemp">Température Initiale (°C)</Label>
+          <Input 
+            id="initialTemp" 
+            type="number" 
+            value={formData.initialTemp} 
+            onChange={e => setFormData({...formData, initialTemp: e.target.value})} 
+            className="bg-zinc-800 border-zinc-700" 
+          />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="ambientTemp">Température Ambiante (°C)</Label>
+          <Input 
+            id="ambientTemp" 
+            type="number" 
+            value={formData.ambientTemp} 
+            onChange={e => setFormData({...formData, ambientTemp: e.target.value})} 
+            className="bg-zinc-800 border-zinc-700" 
+          />
+        </div>
+      </div>
+      
+      <Separator className="bg-zinc-700" />
+      
+      <div className="space-y-2">
+        <Label htmlFor="coolingType">Type de Refroidissement</Label>
+        <Select value={formData.coolingType} onValueChange={v => setFormData({...formData, coolingType: v as FormData['coolingType']})}>
+          <SelectTrigger className="bg-zinc-800 border-zinc-700">
+            <SelectValue placeholder="Sélectionner" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="natural_convection">Convection Naturelle</SelectItem>
+            <SelectItem value="forced_convection">Convection Forcée</SelectItem>
+            <SelectItem value="radiation">Radiation</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      
+      {formData.coolingType !== 'radiation' && (
+        <>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label htmlFor="convectionCoeff">Coefficient de Convection (W/m²K)</Label>
+              <Input 
+                id="convectionCoeff" 
+                type="number" 
+                value={formData.convectionCoeff} 
+                onChange={e => setFormData({...formData, convectionCoeff: e.target.value})} 
+                className="bg-zinc-800 border-zinc-700" 
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="fluidType">Fluide</Label>
+              <Select value={formData.fluidType} onValueChange={v => setFormData({...formData, fluidType: v as FormData['fluidType']})}>
+                <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                  <SelectValue placeholder="Sélectionner" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="air">Air</SelectItem>
+                  <SelectItem value="water">Eau</SelectItem>
+                  <SelectItem value="oil">Huile</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          
+          {formData.coolingType === 'forced_convection' && (
+            <div className="space-y-2">
+              <Label htmlFor="fluidVelocity">Vitesse du Fluide (m/s)</Label>
+              <Input 
+                id="fluidVelocity" 
+                type="number" 
+                value={formData.fluidVelocity} 
+                onChange={e => setFormData({...formData, fluidVelocity: e.target.value})} 
+                className="bg-zinc-800 border-zinc-700" 
+              />
+            </div>
+          )}
+        </>
+      )}
+    </CardContent>
+  );
 
-  static async getMaterialCategories(): Promise<string[]> {
-    try {
-      const { data, error } = await supabase
-        .from('materials')
-        .select('category')
-        .not('category', 'is', null)
-        .order('category', { ascending: true })
+  return (
+    <div className="min-h-screen bg-black text-white p-6">
+      <div className="max-w-7xl mx-auto space-y-6">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" onClick={() => setLocation('/dashboard')}>
+              <ChevronLeft className="w-4 h-4 mr-2" /> Retour
+            </Button>
+            <h1 className="text-2xl font-bold">{id ? 'Modifier Simulation' : 'Nouvelle Simulation'}</h1>
+            {simulation && <SimulationStatus status={simulation.status as any} progress={progress} />}
+          </div>
+          <div className="flex gap-2">
+            {id && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="destructive" disabled={isRunning}>
+                    <Trash2 className="w-4 h-4 mr-2" /> Supprimer
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent className="bg-zinc-900 border-zinc-700 text-white">
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Êtes-vous absolument sûr ?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Cette action est irréversible. Elle supprimera définitivement la simulation et tous ses résultats.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel className="bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-white">Annuler</AlertDialogCancel>
+                    <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">Supprimer</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
+            <Button variant="outline" onClick={handleSave} disabled={isSaving}>
+              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
+              Sauvegarder
+            </Button>
+            <Button onClick={() => startSimulation()} disabled={isRunning || !id || simulation?.status === 'completed'}>
+              {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
+              {isRunning ? 'En cours...' : 'Lancer'}
+            </Button>
+            {isRunning && (
+              <Button variant="secondary" onClick={() => cancelSimulation()}>
+                <X className="w-4 h-4 mr-2" /> Annuler
+              </Button>
+            )}
+          </div>
+        </div>
 
-      if (error) {
-        const supabaseError = handleSupabaseError(error, 'getMaterialCategories')
-        throw new Error(supabaseError.userMessage || `Failed to fetch categories: ${error.message}`)
-      }
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-1 space-y-6">
+            
+            {/* Carte de Configuration Générale */}
+            <Card className="bg-zinc-900 border-zinc-800">
+              <CardHeader><CardTitle>Configuration Générale</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="name">Nom</Label>
+                  <Input 
+                    id="name"
+                    value={formData.name} 
+                    onChange={e => setFormData({...formData, name: e.target.value})} 
+                    className="bg-zinc-800 border-zinc-700" 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="description">Description</Label>
+                  <Input 
+                    id="description"
+                    value={formData.description} 
+                    onChange={e => setFormData({...formData, description: e.target.value})} 
+                    className="bg-zinc-800 border-zinc-700" 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Matériau</Label>
+                  <Select value={formData.materialId} onValueChange={v => setFormData({...formData, materialId: v})}>
+                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                      <SelectValue placeholder="Sélectionner" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {materialsData.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Densité du Maillage</Label>
+                  <Select value={formData.meshDensity} onValueChange={v => setFormData({...formData, meshDensity: v as FormData['meshDensity']})}>
+                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                      <SelectValue placeholder="Sélectionner" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="low">Faible</SelectItem>
+                      <SelectItem value="medium">Moyenne</SelectItem>
+                      <SelectItem value="high">Élevée</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Solveur</Label>
+                  <Select value={formData.solverType} onValueChange={v => setFormData({...formData, solverType: v})}>
+                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
+                      <SelectValue placeholder="Sélectionner" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="fem_fortran">FEM (Fortran)</SelectItem>
+                      <SelectItem value="cfd_openfoam">CFD (OpenFOAM)</SelectItem>
+                      <SelectItem value="pinn_torch">PINN (PyTorch)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Carte de Géométrie */}
+            <Card className="bg-zinc-900 border-zinc-800">
+              <CardHeader><CardTitle>Géométrie</CardTitle></CardHeader>
+              <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label>Fichier Géométrique (STL/STEP)</Label>
+                  <div className="flex items-center gap-2">
+                    <Input type="file" onChange={handleFileUpload} className="hidden" id="geo-upload" />
+                    <Button asChild variant="secondary" className="w-full">
+                      <label htmlFor="geo-upload" className="cursor-pointer">
+                        {uploadingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
+                        {formData.geometryConfig.file_name || 'Choisir un fichier'}
+                      </label>
+                    </Button>
+                  </div>
+                  {formData.geometryConfig.file_name && (
+                    <Badge variant="outline" className="mt-2 bg-green-900/30 border-green-700 text-green-400">
+                      {formData.geometryConfig.file_name}
+                    </Badge>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Carte des Conditions aux Limites */}
+            <Card className="bg-zinc-900 border-zinc-800">
+              <CardHeader><CardTitle>Conditions aux Limites</CardTitle></CardHeader>
+              <BoundaryConditionsForm />
+            </Card>
 
-      // Extraire les catégories uniques
-      const categories = [...new Set(data?.map(item => item.category).filter(Boolean) as string[])]
-      return categories
-    } catch (error: any) {
-      console.error('❌ getMaterialCategories error:', error)
-      return []
-    }
-  }
+          </div>
 
-  static async createMaterial(material: Omit<MaterialInsert, 'id' | 'created_at' | 'updated_at'>): Promise<Material> {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.user) throw new Error('Authentication required')
-
-      // Validation
-      if (!material.name?.trim()) throw new Error('Material name is required')
-      if (!material.density || material.density <= 0) throw new Error('Valid density is required')
-      if (!material.conductivity || material.conductivity <= 0) throw new Error('Valid conductivity is required')
-
-      const newMaterial = {
-        ...material,
-        created_by: session.user.id,
-        updated_by: session.user.id,
-      }
-
-      const { data, error } = await supabase
-        .from('materials')
-        .insert(newMaterial)
-        .select()
-        .single()
-
-      if (error) {
-        const supabaseError = handleSupabaseError(error, 'createMaterial', {
-          name: material.name
-        })
-        throw new Error(supabaseError.userMessage || `Failed to create material: ${error.message}`)
-      }
-
-      // Invalider le cache
-      this.cache.clear()
-
-      return data
-    } catch (error: any) {
-      console.error('❌ createMaterial error:', error)
-      throw error
-    }
-  }
-
-  static async updateMaterial(id: string, updates: MaterialUpdate): Promise<Material> {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.user) throw new Error('Authentication required')
-
-      const updateData = {
-        ...updates,
-        updated_by: session.user.id,
-        updated_at: new Date().toISOString(),
-      }
-
-      const { data, error } = await supabase
-        .from('materials')
-        .update(updateData)
-        .eq('id', id)
-        .select()
-        .single()
-
-      if (error) {
-        const supabaseError = handleSupabaseError(error, 'updateMaterial', { id })
-        throw new Error(supabaseError.userMessage || `Failed to update material: ${error.message}`)
-      }
-
-      // Invalider le cache
-      this.cache.clear()
-      this.cache.delete(`material_${id}`)
-
-      return data
-    } catch (error: any) {
-      console.error(`❌ updateMaterial error for ${id}:`, error)
-      throw error
-    }
-  }
-
-  static async deleteMaterial(id: string): Promise<void> {
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session?.user) throw new Error('Authentication required')
-
-      const { error } = await supabase
-        .from('materials')
-        .delete()
-        .eq('id', id)
-
-      if (error) {
-        const supabaseError = handleSupabaseError(error, 'deleteMaterial', { id })
-        throw new Error(supabaseError.userMessage || `Failed to delete material: ${error.message}`)
-      }
-
-      // Invalider le cache
-      this.cache.clear()
-      this.cache.delete(`material_${id}`)
-    } catch (error: any) {
-      console.error(`❌ deleteMaterial error for ${id}:`, error)
-      throw error
-    }
-  }
-
-  static clearCache(): void {
-    this.cache.clear()
-  }
-
-  static async validateMaterialProperties(properties: Partial<MaterialProperties>): Promise<string[]> {
-    const errors: string[] = []
-
-    if (properties.density !== undefined && properties.density <= 0) {
-      errors.push('Density must be positive')
-    }
-
-    if (properties.conductivity !== undefined && properties.conductivity <= 0) {
-      errors.push('Conductivity must be positive')
-    }
-
-    if (properties.specific_heat !== undefined && properties.specific_heat <= 0) {
-      errors.push('Specific heat must be positive')
-    }
-
-    if (properties.youngs_modulus !== undefined && properties.youngs_modulus <= 0) {
-      errors.push("Young's modulus must be positive")
-    }
-
-    if (properties.poisson_ratio !== undefined && 
-        (properties.poisson_ratio < -1 || properties.poisson_ratio > 0.5)) {
-      errors.push("Poisson's ratio must be between -1 and 0.5")
-    }
-
-    if (properties.emissivity !== undefined && 
-        (properties.emissivity < 0 || properties.emissivity > 1)) {
-      errors.push('Emissivity must be between 0 and 1')
-    }
-
-    return errors
-  }
+          <div className="lg:col-span-2 space-y-6">
+            <Tabs defaultValue="visualizer" className="w-full">
+              <TabsList className="bg-zinc-900 border-zinc-800">
+                <TabsTrigger value="visualizer"><Box className="w-4 h-4 mr-2" /> Visualisation 3D</TabsTrigger>
+                <TabsTrigger value="results"><Thermometer className="w-4 h-4 mr-2" /> Résultats</TabsTrigger>
+              </TabsList>
+              <TabsContent value="visualizer" className="mt-4">
+                {vtkViewerProps ? (
+                  <IndustrialVTKViewer {...vtkViewerProps} />
+                ) : (
+                  <div className="h-[600px] bg-zinc-900 rounded-lg border border-zinc-800 flex items-center justify-center text-zinc-500">
+                    {isRunning ? (
+                      <div className="flex flex-col items-center">
+                        <Loader2 className="w-8 h-8 animate-spin mb-3 text-blue-500" />
+                        Simulation en cours... ({progress}%)
+                      </div>
+                    ) : simulation?.status === 'completed' ? (
+                      <div className="flex flex-col items-center">
+                        <AlertCircle className="w-8 h-8 mb-3 text-yellow-500" />
+                        Résultats disponibles, mais le fichier VTK est manquant.
+                      </div>
+                    ) : (
+                      "Lancez la simulation pour voir le rendu 3D industriel"
+                    )}
+                  </div>
+                )}
+              </TabsContent>
+              <TabsContent value="results">
+                <Card className="bg-zinc-900 border-zinc-800">
+                  <CardHeader><CardTitle>Métriques de Simulation</CardTitle></CardHeader>
+                  <CardContent className="pt-6">
+                    {results ? (
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="p-4 bg-zinc-800 rounded-lg">
+                          <div className="text-sm text-zinc-400">Température Max</div>
+                          <div className="text-2xl font-bold text-red-500">{results.max_temperature?.toFixed(2) || 'N/A'}°C</div>
+                        </div>
+                        <div className="p-4 bg-zinc-800 rounded-lg">
+                          <div className="text-sm text-zinc-400">Score d'Incertitude</div>
+                          <div className="text-2xl font-bold text-green-500">{(results.uncertainty_score * 100)?.toFixed(2) || 'N/A'}%</div>
+                        </div>
+                        <div className="p-4 bg-zinc-800 rounded-lg">
+                          <div className="text-sm text-zinc-400">Temps de Calcul</div>
+                          <div className="text-2xl font-bold text-cyan-500">{results.computation_time_s?.toFixed(1) || 'N/A'}s</div>
+                        </div>
+                        <div className="p-4 bg-zinc-800 rounded-lg">
+                          <div className="text-sm text-zinc-400">Nombre d'Itérations</div>
+                          <div className="text-2xl font-bold text-purple-500">{results.iterations || 'N/A'}</div>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-center py-12 text-zinc-500">Aucun résultat disponible</div>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            </Tabs>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
