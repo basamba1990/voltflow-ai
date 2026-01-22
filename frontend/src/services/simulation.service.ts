@@ -1,3 +1,4 @@
+// services/simulation.service.ts
 import { supabase, handleSupabaseError } from '@/lib/supabase';
 import type { Database } from '@/lib/database.types';
 
@@ -59,6 +60,41 @@ export interface UploadGeometryResponse {
   fileSize?: number;
   fileType?: string;
 }
+
+// -----------------------------------------------------------------------------
+// FONCTIONS UTILITAIRES
+// -----------------------------------------------------------------------------
+
+/**
+ * Convertit un ArrayBuffer en chaîne base64 (sans utiliser Buffer)
+ */
+const arrayBufferToBase64 = (arrayBuffer: ArrayBuffer): string => {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+};
+
+/**
+ * Valide un fichier avant upload
+ */
+const validateFile = (file: File): void => {
+  // Taille maximale : 100MB
+  const maxSize = 100 * 1024 * 1024;
+  if (file.size > maxSize) {
+    throw new Error(`Fichier trop volumineux. Maximum: ${maxSize / (1024 * 1024)} MB`);
+  }
+
+  // Extensions valides
+  const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk'];
+  const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+  
+  if (!validExtensions.includes(fileExt)) {
+    throw new Error(`Format non supporté. Formats acceptés: ${validExtensions.join(', ')}`);
+  }
+};
 
 // -----------------------------------------------------------------------------
 // FONCTIONS EXPORTÉES
@@ -372,29 +408,85 @@ export const startSimulation = async (
 };
 
 /**
- * Upload un fichier de géométrie (STL, STEP, OBJ) via une Edge Function.
+ * Upload un fichier de géométrie via Supabase Storage (solution recommandée)
  */
 export const uploadGeometry = async (
   params: { file: File, userId: string, simulationId?: string }
 ): Promise<UploadGeometryResponse> => {
   try {
-    // Validation du fichier
-    const maxSize = 100 * 1024 * 1024; // 100 MB
-    if (params.file.size > maxSize) {
-      throw new Error(`Fichier trop volumineux. Maximum: ${maxSize / (1024 * 1024)} MB`);
+    // 1. Validation du fichier
+    validateFile(params.file);
+
+    // 2. Préparer le chemin dans Supabase Storage
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(2, 9);
+    const fileExt = params.file.name.split('.').pop();
+    const fileName = `${params.userId}/${timestamp}_${randomId}.${fileExt}`;
+
+    // 3. Upload direct vers Supabase Storage (solution simple et efficace)
+    const { data, error } = await supabase.storage
+      .from('geometries')
+      .upload(fileName, params.file, {
+        cacheControl: '3600',
+        upsert: false,
+      });
+
+    if (error) {
+      console.error('Supabase storage upload error:', error);
+      
+      // Gérer les erreurs spécifiques
+      if (error.message.includes('bucket') || error.message.includes('not found')) {
+        throw new Error('Configuration de stockage manquante. Contactez l\'administrateur.');
+      }
+      
+      throw new Error(`Échec de l'upload: ${error.message}`);
     }
 
-    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply'];
-    const fileExt = params.file.name.toLowerCase().slice(params.file.name.lastIndexOf('.'));
+    // 4. Obtenir l'URL publique
+    const { data: urlData } = supabase.storage
+      .from('geometries')
+      .getPublicUrl(fileName);
+
+    if (!urlData.publicUrl) {
+      throw new Error('Impossible de générer l\'URL publique');
+    }
+
+    return {
+      success: true,
+      fileUrl: urlData.publicUrl,
+      fileName: params.file.name,
+      fileSize: params.file.size,
+      fileType: params.file.type,
+    };
+  } catch (error: any) {
+    console.error('❌ uploadGeometry error:', error);
     
-    if (!validExtensions.includes(fileExt)) {
-      throw new Error(`Format non supporté. Formats acceptés: ${validExtensions.join(', ')}`);
+    // Messages d'erreur plus clairs
+    if (error.message.includes('trop volumineux')) {
+      throw new Error(error.message);
     }
+    
+    if (error.message.includes('Format non supporté')) {
+      throw new Error(error.message);
+    }
+    
+    throw new Error(`Erreur upload: ${error.message || 'Erreur inconnue'}`);
+  }
+};
 
-    // Conversion en base64
+/**
+ * Upload alternative via Edge Function (si nécessaire)
+ */
+export const uploadGeometryViaEdgeFunction = async (
+  params: { file: File, userId: string, simulationId?: string }
+): Promise<UploadGeometryResponse> => {
+  try {
+    // Validation du fichier
+    validateFile(params.file);
+
+    // Convertir en base64 sans Buffer
     const arrayBuffer = await params.file.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const fileData = buffer.toString('base64');
+    const fileData = arrayBufferToBase64(arrayBuffer);
 
     // Appel à l'Edge Function
     const { data, error } = await supabase.functions.invoke('upload-geometry', {
@@ -406,12 +498,16 @@ export const uploadGeometry = async (
         user_id: params.userId,
         simulation_id: params.simulationId,
       },
-      timeout: 60000, // 60 secondes
+      timeout: 60000,
     });
 
     if (error) {
-      console.error('Upload geometry error:', error);
+      console.error('Edge Function upload error:', error);
       throw new Error(`Échec de l'upload: ${error.message || 'Erreur inconnue'}`);
+    }
+
+    if (!data?.success) {
+      throw new Error(data?.message || 'Upload échoué');
     }
 
     return {
@@ -422,7 +518,7 @@ export const uploadGeometry = async (
       fileType: params.file.type,
     };
   } catch (error: any) {
-    console.error('❌ uploadGeometry error:', error);
+    console.error('❌ uploadGeometryViaEdgeFunction error:', error);
     throw error;
   }
 };
@@ -438,11 +534,16 @@ export const deleteSimulation = async (
     if (!session?.user) throw new Error('Authentification requise');
 
     // Vérifier que l'utilisateur est propriétaire et le statut
-    const { data: simulation } = await supabase
+    const { data: simulation, error: fetchError } = await supabase
       .from('simulations')
       .select('user_id, status')
       .eq('id', simulationId)
       .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') throw new Error('Simulation non trouvée');
+      throw fetchError;
+    }
 
     if (!simulation) throw new Error('Simulation non trouvée');
     if (simulation.user_id !== session.user.id) throw new Error('Permission refusée');
@@ -455,14 +556,14 @@ export const deleteSimulation = async (
       .eq('simulation_id', simulationId);
 
     // Supprimer la simulation
-    const { error } = await supabase
+    const { error: deleteError } = await supabase
       .from('simulations')
       .delete()
       .eq('id', simulationId)
       .eq('user_id', session.user.id);
 
-    if (error) {
-      const supabaseError = handleSupabaseError(error, 'deleteSimulation', { simulationId });
+    if (deleteError) {
+      const supabaseError = handleSupabaseError(deleteError, 'deleteSimulation', { simulationId });
       throw new Error(supabaseError.userMessage);
     }
   } catch (error: any) {
@@ -585,18 +686,23 @@ export const cancelSimulation = async (
     if (!session?.user) throw new Error('Authentification requise');
 
     // Vérifier la propriété
-    const { data: simulation } = await supabase
+    const { data: simulation, error: fetchError } = await supabase
       .from('simulations')
       .select('user_id, status')
       .eq('id', simulationId)
       .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') throw new Error('Simulation non trouvée');
+      throw fetchError;
+    }
 
     if (!simulation) throw new Error('Simulation non trouvée');
     if (simulation.user_id !== session.user.id) throw new Error('Permission refusée');
     if (simulation.status !== 'running') throw new Error('Seules les simulations en cours peuvent être annulées');
 
     // Mettre à jour le statut
-    const { error } = await supabase
+    const { error: updateError } = await supabase
       .from('simulations')
       .update({
         status: 'cancelled',
@@ -606,7 +712,7 @@ export const cancelSimulation = async (
       })
       .eq('id', simulationId);
 
-    if (error) throw error;
+    if (updateError) throw updateError;
   } catch (error: any) {
     console.error('❌ cancelSimulation error:', error);
     throw error;
@@ -666,7 +772,8 @@ const SimulationService = {
   createSimulation,
   updateSimulation,
   startSimulation,
-  uploadGeometry,
+  uploadGeometry, // Version Supabase Storage (recommandée)
+  uploadGeometryViaEdgeFunction, // Version alternative
   deleteSimulation,
   subscribeToSimulation,
   unsubscribeFromChannel,
