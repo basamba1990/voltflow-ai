@@ -1,543 +1,842 @@
-import { useState, useEffect, useCallback } from 'react';
-import { useParams, useLocation } from 'wouter';
-import { toast } from 'sonner';
-import {
-  Save,
-  Play,
-  Download,
-  Trash2,
-  Thermometer,
-  Loader2,
-  AlertCircle,
-  ChevronLeft,
-  UploadCloud,
-  Box,
-  X
-} from 'lucide-react';
+import { supabase, handleSupabaseError } from '@/lib/supabase';
+import type { Database } from '@/lib/database.types';
 
-// Services et hooks
-import SimulationService, { Simulation, SimulationConfig } from '@/services/simulation.service';
-import { useSimulation } from '@/hooks/useSimulation';
-import { useMaterials } from '@/hooks/useMaterials';
-import { useAuth } from '@/contexts/AuthContext';
+export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
+  simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
+};
 
-// Composants UI
-import { SimulationStatus } from '@/components/SimulationStatus';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
-import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import IndustrialVTKViewer, { IndustrialField } from '@/components/Viewers/IndustrialVTKViewer'; // Import du nouveau Viewer
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
+export type SimulationInsert = Database['public']['Tables']['simulations']['Insert'];
+export type SimulationUpdate = Database['public']['Tables']['simulations']['Update'];
+export type SimulationResult = Database['public']['Tables']['simulation_results']['Row'];
 
-// Définition des types pour le formulaire
-interface FormData {
+export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type MeshDensity = 'low' | 'medium' | 'high';
+export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
+export type FluidType = 'air' | 'water' | 'oil';
+export type SolverType = 'fem_fortran' | 'openfoam' | 'comsol' | 'ansys';
+
+export interface SimulationConfig {
+  geometry_config: {
+    type: string;
+    file_url?: string;
+    file_name?: string;
+    dimensions?: Record<string, number>;
+  };
+  boundary_conditions: {
+    initial_temp: number;
+    ambient_temp: number;
+    cooling_type: CoolingType;
+    convection_coeff: number;
+    fluid_type: FluidType;
+    fluid_velocity: number;
+  };
+  material_id: string;
+  mesh_density: MeshDensity;
+  solver_type: SolverType;
+}
+
+export interface CreateSimulationParams {
   name: string;
-  description: string;
+  description?: string;
   geometryType: string;
-  geometryConfig: { file_url: string; file_name: string; };
-  materialId: string;
-  meshDensity: 'low' | 'medium' | 'high';
-  initialTemp: string;
-  ambientTemp: string;
-  coolingType: 'natural_convection' | 'forced_convection' | 'radiation';
-  convectionCoeff: string;
-  fluidType: 'air' | 'water' | 'oil';
-  fluidVelocity: string;
-  solverType: string;
+  config: SimulationConfig;
 }
 
-export default function SimulationEditor() {
-  const [, setLocation] = useLocation();
-  const { id } = useParams<{ id: string }>();
-  const { 
-    simulation, 
-    results, 
-    isRunning, 
-    progress, 
-    startSimulation, 
-    cancelSimulation,
-    deleteSimulation,
-    refresh 
-  } = useSimulation(id || '', { realtime: true });
-  const { data: materialsDataRaw } = useMaterials();
-  const { user } = useAuth();
-  
-  const materialsData = Array.isArray(materialsDataRaw) ? materialsDataRaw : [];
-  
-  const [formData, setFormData] = useState<FormData>({
-    name: '',
-    description: '',
-    geometryType: 'complex',
-    geometryConfig: { file_url: '', file_name: '' },
-    materialId: '',
-    meshDensity: 'high',
-    initialTemp: '200',
-    ambientTemp: '25',
-    coolingType: 'natural_convection',
-    convectionCoeff: '10',
-    fluidType: 'air',
-    fluidVelocity: '0',
-    solverType: 'fem_fortran'
-  });
+export interface StartSimulationResponse {
+  success: boolean;
+  simulation_id: string;
+  status: SimulationStatus;
+  results?: any;
+  message?: string;
+  task_id?: string;
+}
 
-  const [isSaving, setIsSaving] = useState(false);
-  const [uploadingFile, setUploadingFile] = useState(false);
+export interface UploadGeometryResponse {
+  success: boolean;
+  fileUrl: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+}
 
-  // Synchronisation des données de la simulation avec le formulaire
-  useEffect(() => {
-    if (id && simulation) {
-      const bc = simulation.boundary_conditions as SimulationConfig['boundary_conditions'];
-      const geo = simulation.geometry_config as SimulationConfig['geometry_config'];
-      
-      setFormData({
-        name: simulation.name || '',
-        description: simulation.description || '',
-        geometryType: simulation.geometry_type || 'complex',
-        geometryConfig: geo || { file_url: '', file_name: '' },
-        materialId: simulation.material_id || '',
-        meshDensity: simulation.mesh_density as 'low' | 'medium' | 'high' || 'high',
-        initialTemp: bc?.initial_temp?.toString() || '200',
-        ambientTemp: bc?.ambient_temp?.toString() || '25',
-        coolingType: bc?.cooling_type || 'natural_convection',
-        convectionCoeff: bc?.convection_coeff?.toString() || '10',
-        fluidType: bc?.fluid_type || 'air',
-        fluidVelocity: bc?.fluid_velocity?.toString() || '0',
-        solverType: (simulation as any).solver_type || 'fem_fortran'
-      });
-    }
-  }, [id, simulation]);
+// -----------------------------------------------------------------------------
+// FONCTIONS DE RÉCUPÉRATION - OPTIMISÉES AVEC CACHE ET RETRY
+// -----------------------------------------------------------------------------
+export const getSimulations = async (
+  options: {
+    limit?: number;
+    status?: SimulationStatus;
+    offset?: number;
+    refresh?: boolean;
+  } = {}
+): Promise<Simulation[]> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Utilisateur non authentifié');
 
-  // Gestion de l'upload de fichier
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !user?.id) return;
-
-    try {
-      setUploadingFile(true);
-      const result = await SimulationService.uploadGeometry({ file, userId: user.id, simulationId: id });
-      setFormData(prev => ({
-        ...prev,
-        geometryConfig: { file_url: result.fileUrl, file_name: result.fileName }
-      }));
-      toast.success("Fichier géométrique téléchargé");
-    } catch (error: any) {
-      toast.error("Erreur upload: " + error.message);
-    } finally {
-      setUploadingFile(false);
-    }
-  };
-
-  // Gestion de la sauvegarde
-  const handleSave = async () => {
-    if (!formData.name.trim()) return toast.error('Nom requis');
-    if (!formData.materialId) return toast.error('Matériau requis');
+    const { limit = 50, status, offset = 0, refresh = false } = options;
     
-    try {
-      setIsSaving(true);
-      
-      const config: SimulationConfig = {
-        geometry_config: formData.geometryConfig,
-        material_id: formData.materialId,
-        mesh_density: formData.meshDensity,
-        solver_type: formData.solverType,
-        boundary_conditions: {
-          initial_temp: parseFloat(formData.initialTemp),
-          ambient_temp: parseFloat(formData.ambientTemp),
-          cooling_type: formData.coolingType,
-          convection_coeff: parseFloat(formData.convectionCoeff),
-          fluid_type: formData.fluidType,
-          fluid_velocity: parseFloat(formData.fluidVelocity),
+    // Gestion du cache
+    const cacheKey = `simulations_${session.user.id}_${limit}_${offset}_${status || 'all'}`;
+    if (!refresh) {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const { data, timestamp } = JSON.parse(cached);
+        if (Date.now() - timestamp < 30000) { // 30 secondes de cache
+          return data;
         }
-      };
+      }
+    }
+
+    let query = supabase
+      .from('simulations')
+      .select(`
+        *,
+        simulation_results (*),
+        materials (id, name, conductivity, density)
+      `)
+      .eq('user_id', session.user.id)
+      .order('created_at', { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (status) {
+      query = query.eq('status', status);
+    }
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      const supabaseError = handleSupabaseError(error, 'getSimulations', {
+        userId: session.user.id,
+        options
+      });
+      throw new Error(supabaseError.userMessage);
+    }
+
+    // Mise en cache
+    sessionStorage.setItem(cacheKey, JSON.stringify({
+      data: data || [],
+      timestamp: Date.now(),
+      count: count || 0
+    }));
+
+    return data || [];
+  } catch (error: any) {
+    console.error('❌ getSimulations error:', error);
+    
+    // Fallback au cache en cas d'erreur
+    const cacheKey = `simulations_${options.status || 'all'}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      console.warn('⚠️ Returning cached simulations due to error');
+      return JSON.parse(cached).data;
+    }
+    
+    throw error;
+  }
+};
+
+export const getSimulationById = async (
+  simulationId: string, 
+  options?: { refresh?: boolean }
+): Promise<Simulation | null> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Utilisateur non authentifié');
+
+    // Gestion du cache
+    const cacheKey = `simulation_${simulationId}`;
+    if (!options?.refresh) {
+      const cached = sessionStorage.getItem(cacheKey);
+      if (cached) {
+        const { data, timestamp, userId } = JSON.parse(cached);
+        if (userId === session.user.id && Date.now() - timestamp < 15000) { // 15 secondes
+          return data;
+        }
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('simulations')
+      .select(`
+        *,
+        simulation_results (*),
+        materials (id, name, conductivity, density, specific_heat)
+      `)
+      .eq('id', simulationId)
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null;
       
-      const payload = {
-        name: formData.name,
-        description: formData.description,
-        geometryType: formData.geometryType,
-        config: config
-      };
+      const supabaseError = handleSupabaseError(error, 'getSimulationById', { simulationId });
+      throw new Error(supabaseError.userMessage);
+    }
 
-      if (id) {
-        await SimulationService.updateSimulation(id, payload);
-        toast.success('Mis à jour');
-      } else {
-        const newSim = await SimulationService.createSimulation(payload);
-        setLocation(`/simulation/${newSim.id}`);
-      }
-    } catch (error: any) {
-      toast.error(error.message);
-    } finally {
-      setIsSaving(false);
-    }
-  };
-  
-  // Gestion de la suppression
-  const handleDelete = async () => {
-    if (!id) return;
-    try {
-      await deleteSimulation();
-      setLocation('/dashboard');
-    } catch (error) {
-      // L'erreur est déjà toastée dans useSimulation
-    }
-  };
+    // Mise en cache
+    sessionStorage.setItem(cacheKey, JSON.stringify({
+      data,
+      timestamp: Date.now(),
+      userId: session.user.id
+    }));
 
-  // Préparation des données pour le VTK Viewer
-  const vtkViewerProps = useMemo(() => {
-    if (!results || !results.vtk_file_url) return null;
+    return data;
+  } catch (error: any) {
+    console.error('❌ getSimulationById error:', error);
     
-    // Simuler la création des champs de données industriels
-    const fields: IndustrialField[] = [];
-    
-    // Champ de Température (obligatoire)
-    if (results.temperature_field) {
-      const values = new Float32Array(results.temperature_field);
-      fields.push({
-        id: 'temp',
-        name: 'Temperature',
-        type: 'temperature',
-        values: values,
-        units: '°C',
-        min: Math.min(...values),
-        max: Math.max(...values),
-      });
+    // Fallback au cache
+    const cacheKey = `simulation_${simulationId}`;
+    const cached = sessionStorage.getItem(cacheKey);
+    if (cached) {
+      console.warn('⚠️ Returning cached simulation due to error');
+      const parsed = JSON.parse(cached);
+      return parsed.data;
     }
     
-    // Champ de Contrainte (exemple)
-    if (results.stress_field) {
-      const values = new Float32Array(results.stress_field);
-      fields.push({
-        id: 'stress',
-        name: 'Von Mises Stress',
-        type: 'stress',
-        values: values,
-        units: 'MPa',
-        min: Math.min(...values),
-        max: Math.max(...values),
-      });
+    throw error;
+  }
+};
+
+export const getSimulationResults = async (
+  simulationId: string
+): Promise<SimulationResult | null> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Utilisateur non authentifié');
+
+    const { data, error } = await supabase
+      .from('simulation_results')
+      .select('*')
+      .eq('simulation_id', simulationId)
+      .in('simulation_id', 
+        supabase
+          .from('simulations')
+          .select('id')
+          .eq('user_id', session.user.id)
+      )
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      const supabaseError = handleSupabaseError(error, 'getSimulationResults', { simulationId });
+      throw new Error(supabaseError.userMessage);
     }
+
+    return data;
+  } catch (error: any) {
+    console.error('❌ getSimulationResults error:', error);
+    throw error;
+  }
+};
+
+// -----------------------------------------------------------------------------
+// CRÉATION ET MISE À JOUR - VALIDATION RENFORCÉE
+// -----------------------------------------------------------------------------
+export const createSimulation = async (
+  params: CreateSimulationParams
+): Promise<Simulation> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Authentification requise');
+
+    // Validation exhaustive
+    const validationErrors: string[] = [];
     
-    // Déterminer le champ actif (par défaut, la température)
-    const active_field_id = fields.length > 0 ? fields[0].id : undefined;
+    if (!params.name?.trim()) validationErrors.push('Le nom de la simulation est requis');
+    if (params.name.length > 100) validationErrors.push('Le nom ne doit pas dépasser 100 caractères');
+    if (!params.config.material_id) validationErrors.push('Le matériau est requis');
     
-    return {
-      mesh: {
-        url: results.vtk_file_url,
-        type: 'vtp' as const, // Assumer VTP pour les résultats de simulation
-      },
-      fields: fields,
-      active_field_id: active_field_id,
-      show_controls: true,
-      show_coordinates: true,
-      className: 'h-[600px] w-full',
-      simulation: {
-        engine: formData.solverType,
-        case_name: formData.name,
-        version: '1.0',
-        timestamp: new Date().toISOString(),
-      }
+    const temp = params.config.boundary_conditions.initial_temp;
+    if (temp < -273.15 || temp > 10000) validationErrors.push('Température initiale invalide');
+    
+    if (validationErrors.length > 0) {
+      throw new Error(validationErrors.join('. '));
+    }
+
+    const newSimulation = {
+      user_id: session.user.id,
+      name: params.name.trim(),
+      description: params.description?.trim() || null,
+      geometry_type: params.geometryType || 'complex',
+      geometry_config: params.config.geometry_config || { type: 'complex' },
+      boundary_conditions: params.config.boundary_conditions,
+      material_id: params.config.material_id,
+      mesh_density: params.config.mesh_density || 'medium',
+      solver_type: params.config.solver_type || 'fem_fortran',
+      status: 'pending' as SimulationStatus,
+      progress: 0,
+      error_message: null,
     };
-  }, [results, formData.solverType, formData.name]);
 
-  // Composant de configuration des conditions aux limites
-  const BoundaryConditionsForm = () => (
-    <CardContent className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="initialTemp">Température Initiale (°C)</Label>
-          <Input 
-            id="initialTemp" 
-            type="number" 
-            value={formData.initialTemp} 
-            onChange={e => setFormData({...formData, initialTemp: e.target.value})} 
-            className="bg-zinc-800 border-zinc-700" 
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="ambientTemp">Température Ambiante (°C)</Label>
-          <Input 
-            id="ambientTemp" 
-            type="number" 
-            value={formData.ambientTemp} 
-            onChange={e => setFormData({...formData, ambientTemp: e.target.value})} 
-            className="bg-zinc-800 border-zinc-700" 
-          />
-        </div>
-      </div>
+    console.log('Creating simulation with:', { 
+      ...newSimulation, 
+      user_id: 'hidden', 
+      material_id: newSimulation.material_id 
+    });
+
+    const { data, error } = await supabase
+      .from('simulations')
+      .insert(newSimulation)
+      .select(`
+        *,
+        materials (id, name)
+      `)
+      .single();
+
+    if (error) {
+      const supabaseError = handleSupabaseError(error, 'createSimulation', {
+        userId: session.user.id,
+        simulationName: params.name
+      });
+      throw new Error(supabaseError.userMessage);
+    }
+
+    // Nettoyer le cache
+    sessionStorage.removeItem(`simulations_${session.user.id}`);
+
+    return data;
+  } catch (error: any) {
+    console.error('❌ createSimulation error:', error);
+    throw error;
+  }
+};
+
+export const updateSimulation = async (
+  simulationId: string,
+  params: Partial<CreateSimulationParams>
+): Promise<Simulation> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Authentification requise');
+
+    // Vérifier la propriété
+    const { data: existingSim } = await supabase
+      .from('simulations')
+      .select('id, user_id, status')
+      .eq('id', simulationId)
+      .single();
+
+    if (!existingSim) throw new Error('Simulation non trouvée');
+    if (existingSim.user_id !== session.user.id) throw new Error('Permission refusée');
+    if (existingSim.status === 'running') throw new Error('Impossible de modifier une simulation en cours');
+
+    const updateData: any = {
+      updated_at: new Date().toISOString(),
+    };
+
+    if (params.name !== undefined) {
+      if (!params.name.trim()) throw new Error('Le nom est requis');
+      updateData.name = params.name.trim();
+    }
+    
+    if (params.description !== undefined) {
+      updateData.description = params.description?.trim() || null;
+    }
+    
+    if (params.geometryType !== undefined) {
+      updateData.geometry_type = params.geometryType;
+    }
+    
+    if (params.config) {
+      updateData.geometry_config = params.config.geometry_config;
+      updateData.boundary_conditions = params.config.boundary_conditions;
+      updateData.material_id = params.config.material_id;
+      updateData.mesh_density = params.config.mesh_density;
+      updateData.solver_type = params.config.solver_type;
+    }
+
+    const { data, error } = await supabase
+      .from('simulations')
+      .update(updateData)
+      .eq('id', simulationId)
+      .eq('user_id', session.user.id)
+      .select(`
+        *,
+        materials (id, name)
+      `)
+      .single();
+
+    if (error) {
+      const supabaseError = handleSupabaseError(error, 'updateSimulation', { simulationId });
+      throw new Error(supabaseError.userMessage);
+    }
+
+    // Nettoyer le cache
+    sessionStorage.removeItem(`simulation_${simulationId}`);
+    sessionStorage.removeItem(`simulations_${session.user.id}`);
+
+    return data;
+  } catch (error: any) {
+    console.error('❌ updateSimulation error:', error);
+    throw error;
+  }
+};
+
+// -----------------------------------------------------------------------------
+// LANCEMENT DE SIMULATION - ROBUSTE AVEC RETRY
+// -----------------------------------------------------------------------------
+export const startSimulation = async (
+  simulationId: string, 
+  options?: { retryCount?: number }
+): Promise<StartSimulationResponse> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Authentification requise');
+
+    // 1. Vérifier l'existence et le statut
+    const { data: simulation, error: fetchError } = await supabase
+      .from('simulations')
+      .select('status, geometry_config, boundary_conditions, material_id, mesh_density, solver_type')
+      .eq('id', simulationId)
+      .eq('user_id', session.user.id)
+      .single();
+
+    if (fetchError) {
+      if (fetchError.code === 'PGRST116') {
+        throw new Error('Simulation non trouvée');
+      }
+      throw new Error(`Erreur de récupération: ${fetchError.message}`);
+    }
+
+    // 2. Empêcher les doublons et vérifier l'état
+    if (simulation.status === 'running') {
+      throw new Error('Une simulation est déjà en cours pour ce modèle');
+    }
+    
+    if (simulation.status === 'completed') {
+      const overwrite = window.confirm(
+        'Une simulation existe déjà pour ce modèle. Voulez-vous relancer une nouvelle simulation ?'
+      );
+      if (!overwrite) {
+        return {
+          success: false,
+          simulation_id: simulationId,
+          status: simulation.status,
+          message: 'Simulation annulée par l\'utilisateur'
+        };
+      }
+    }
+
+    // 3. Validation des données
+    if (!simulation.geometry_config?.file_url && !simulation.geometry_config?.dimensions) {
+      throw new Error('Configuration géométrique incomplète');
+    }
+    
+    if (!simulation.material_id) {
+      throw new Error('Matériau non sélectionné');
+    }
+
+    // 4. Mettre à jour le statut immédiatement
+    await supabase
+      .from('simulations')
+      .update({ 
+        status: 'running', 
+        progress: 0, 
+        error_message: null,
+        started_at: new Date().toISOString()
+      })
+      .eq('id', simulationId);
+
+    // 5. Préparer la configuration
+    const config = {
+      geometry_config: simulation.geometry_config,
+      boundary_conditions: simulation.boundary_conditions,
+      material_id: simulation.material_id,
+      mesh_density: simulation.mesh_density,
+      solver_type: simulation.solver_type,
+      user_id: session.user.id,
+    };
+
+    // 6. Appeler l'Edge Function avec timeout
+    const timeout = 30000; // 30 secondes
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('simulate', {
+        body: {
+          simulation_id: simulationId,
+          config: config,
+          user_id: session.user.id,
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (error) {
+        console.error('Edge Function invocation error:', error);
+        
+        // Marquer comme échoué
+        await supabase
+          .from('simulations')
+          .update({ 
+            status: 'failed', 
+            progress: 0, 
+            error_message: error.message || 'Erreur lors de l\'appel',
+            completed_at: new Date().toISOString()
+          })
+          .eq('id', simulationId);
+
+        // Tentative de reprise
+        if (options?.retryCount === undefined || options.retryCount < 2) {
+          console.log(`Tentative de reprise ${(options?.retryCount || 0) + 1}/2`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          return startSimulation(simulationId, { 
+            retryCount: (options?.retryCount || 0) + 1 
+          });
+        }
+
+        throw new Error(`Échec du lancement: ${error.message || 'Erreur inconnue'}`);
+      }
+
+      // 7. Retourner la réponse
+      return {
+        success: data?.success || false,
+        simulation_id: simulationId,
+        status: data?.status || 'running',
+        results: data?.results,
+        message: data?.message || 'Simulation lancée avec succès',
+        task_id: data?.task_id,
+      };
+    } catch (invokeError: any) {
+      clearTimeout(timeoutId);
       
-      <Separator className="bg-zinc-700" />
-      
-      <div className="space-y-2">
-        <Label htmlFor="coolingType">Type de Refroidissement</Label>
-        <Select value={formData.coolingType} onValueChange={v => setFormData({...formData, coolingType: v as FormData['coolingType']})}>
-          <SelectTrigger className="bg-zinc-800 border-zinc-700">
-            <SelectValue placeholder="Sélectionner" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="natural_convection">Convection Naturelle</SelectItem>
-            <SelectItem value="forced_convection">Convection Forcée</SelectItem>
-            <SelectItem value="radiation">Radiation</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      
-      {formData.coolingType !== 'radiation' && (
-        <>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="convectionCoeff">Coefficient de Convection (W/m²K)</Label>
-              <Input 
-                id="convectionCoeff" 
-                type="number" 
-                value={formData.convectionCoeff} 
-                onChange={e => setFormData({...formData, convectionCoeff: e.target.value})} 
-                className="bg-zinc-800 border-zinc-700" 
-              />
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="fluidType">Fluide</Label>
-              <Select value={formData.fluidType} onValueChange={v => setFormData({...formData, fluidType: v as FormData['fluidType']})}>
-                <SelectTrigger className="bg-zinc-800 border-zinc-700">
-                  <SelectValue placeholder="Sélectionner" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="air">Air</SelectItem>
-                  <SelectItem value="water">Eau</SelectItem>
-                  <SelectItem value="oil">Huile</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          
-          {formData.coolingType === 'forced_convection' && (
-            <div className="space-y-2">
-              <Label htmlFor="fluidVelocity">Vitesse du Fluide (m/s)</Label>
-              <Input 
-                id="fluidVelocity" 
-                type="number" 
-                value={formData.fluidVelocity} 
-                onChange={e => setFormData({...formData, fluidVelocity: e.target.value})} 
-                className="bg-zinc-800 border-zinc-700" 
-              />
-            </div>
-          )}
-        </>
-      )}
-    </CardContent>
-  );
+      if (invokeError.name === 'AbortError') {
+        throw new Error('Délai d\'attente dépassé lors du lancement de la simulation');
+      }
+      throw invokeError;
+    }
+  } catch (error: any) {
+    console.error('❌ startSimulation error:', error);
+    
+    // Nettoyer en cas d'erreur
+    try {
+      await supabase
+        .from('simulations')
+        .update({ 
+          status: 'failed', 
+          error_message: error.message.substring(0, 500),
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', simulationId);
+    } catch (updateError) {
+      console.error('Failed to update simulation status:', updateError);
+    }
+    
+    throw error;
+  }
+};
 
-  return (
-    <div className="min-h-screen bg-black text-white p-6">
-      <div className="max-w-7xl mx-auto space-y-6">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Button variant="ghost" onClick={() => setLocation('/dashboard')}>
-              <ChevronLeft className="w-4 h-4 mr-2" /> Retour
-            </Button>
-            <h1 className="text-2xl font-bold">{id ? 'Modifier Simulation' : 'Nouvelle Simulation'}</h1>
-            {simulation && <SimulationStatus status={simulation.status as any} progress={progress} />}
-          </div>
-          <div className="flex gap-2">
-            {id && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button variant="destructive" disabled={isRunning}>
-                    <Trash2 className="w-4 h-4 mr-2" /> Supprimer
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent className="bg-zinc-900 border-zinc-700 text-white">
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Êtes-vous absolument sûr ?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Cette action est irréversible. Elle supprimera définitivement la simulation et tous ses résultats.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel className="bg-zinc-800 hover:bg-zinc-700 border-zinc-700 text-white">Annuler</AlertDialogCancel>
-                    <AlertDialogAction onClick={handleDelete} className="bg-red-600 hover:bg-red-700">Supprimer</AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-            <Button variant="outline" onClick={handleSave} disabled={isSaving}>
-              {isSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4 mr-2" />}
-              Sauvegarder
-            </Button>
-            <Button onClick={() => startSimulation()} disabled={isRunning || !id || simulation?.status === 'completed'}>
-              {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
-              {isRunning ? 'En cours...' : 'Lancer'}
-            </Button>
-            {isRunning && (
-              <Button variant="secondary" onClick={() => cancelSimulation()}>
-                <X className="w-4 h-4 mr-2" /> Annuler
-              </Button>
-            )}
-          </div>
-        </div>
+// -----------------------------------------------------------------------------
+// UPLOAD DE GÉOMÉTRIE - AMÉLIORÉ
+// -----------------------------------------------------------------------------
+export const uploadGeometry = async (
+  params: { 
+    file: File, 
+    userId: string, 
+    simulationId?: string 
+  }
+): Promise<UploadGeometryResponse> => {
+  try {
+    // Validation du fichier
+    const maxSize = 100 * 1024 * 1024; // 100 MB
+    if (params.file.size > maxSize) {
+      throw new Error(`Fichier trop volumineux. Maximum: ${maxSize / (1024 * 1024)} MB`);
+    }
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1 space-y-6">
-            
-            {/* Carte de Configuration Générale */}
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader><CardTitle>Configuration Générale</CardTitle></CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Nom</Label>
-                  <Input 
-                    id="name"
-                    value={formData.name} 
-                    onChange={e => setFormData({...formData, name: e.target.value})} 
-                    className="bg-zinc-800 border-zinc-700" 
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="description">Description</Label>
-                  <Input 
-                    id="description"
-                    value={formData.description} 
-                    onChange={e => setFormData({...formData, description: e.target.value})} 
-                    className="bg-zinc-800 border-zinc-700" 
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Matériau</Label>
-                  <Select value={formData.materialId} onValueChange={v => setFormData({...formData, materialId: v})}>
-                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
-                      <SelectValue placeholder="Sélectionner" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {materialsData.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Densité du Maillage</Label>
-                  <Select value={formData.meshDensity} onValueChange={v => setFormData({...formData, meshDensity: v as FormData['meshDensity']})}>
-                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
-                      <SelectValue placeholder="Sélectionner" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">Faible</SelectItem>
-                      <SelectItem value="medium">Moyenne</SelectItem>
-                      <SelectItem value="high">Élevée</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="space-y-2">
-                  <Label>Solveur</Label>
-                  <Select value={formData.solverType} onValueChange={v => setFormData({...formData, solverType: v})}>
-                    <SelectTrigger className="bg-zinc-800 border-zinc-700">
-                      <SelectValue placeholder="Sélectionner" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="fem_fortran">FEM (Fortran)</SelectItem>
-                      <SelectItem value="cfd_openfoam">CFD (OpenFOAM)</SelectItem>
-                      <SelectItem value="pinn_torch">PINN (PyTorch)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </CardContent>
-            </Card>
-            
-            {/* Carte de Géométrie */}
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader><CardTitle>Géométrie</CardTitle></CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Fichier Géométrique (STL/STEP)</Label>
-                  <div className="flex items-center gap-2">
-                    <Input type="file" onChange={handleFileUpload} className="hidden" id="geo-upload" />
-                    <Button asChild variant="secondary" className="w-full">
-                      <label htmlFor="geo-upload" className="cursor-pointer">
-                        {uploadingFile ? <Loader2 className="w-4 h-4 animate-spin" /> : <UploadCloud className="w-4 h-4 mr-2" />}
-                        {formData.geometryConfig.file_name || 'Choisir un fichier'}
-                      </label>
-                    </Button>
-                  </div>
-                  {formData.geometryConfig.file_name && (
-                    <Badge variant="outline" className="mt-2 bg-green-900/30 border-green-700 text-green-400">
-                      {formData.geometryConfig.file_name}
-                    </Badge>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-            
-            {/* Carte des Conditions aux Limites */}
-            <Card className="bg-zinc-900 border-zinc-800">
-              <CardHeader><CardTitle>Conditions aux Limites</CardTitle></CardHeader>
-              <BoundaryConditionsForm />
-            </Card>
+    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply'];
+    const fileExt = params.file.name.toLowerCase().slice(params.file.name.lastIndexOf('.'));
+    
+    if (!validExtensions.includes(fileExt)) {
+      throw new Error(`Format non supporté. Formats acceptés: ${validExtensions.join(', ')}`);
+    }
 
-          </div>
+    // Conversion en base64
+    const reader = new FileReader();
+    const fileData = await new Promise<string>((resolve, reject) => {
+      reader.onload = () => {
+        const binary = reader.result as string;
+        const base64 = btoa(binary);
+        resolve(base64);
+      };
+      reader.onerror = () => reject(new Error('Erreur de lecture du fichier'));
+      reader.readAsBinaryString(params.file);
+    });
 
-          <div className="lg:col-span-2 space-y-6">
-            <Tabs defaultValue="visualizer" className="w-full">
-              <TabsList className="bg-zinc-900 border-zinc-800">
-                <TabsTrigger value="visualizer"><Box className="w-4 h-4 mr-2" /> Visualisation 3D</TabsTrigger>
-                <TabsTrigger value="results"><Thermometer className="w-4 h-4 mr-2" /> Résultats</TabsTrigger>
-              </TabsList>
-              <TabsContent value="visualizer" className="mt-4">
-                {vtkViewerProps ? (
-                  <IndustrialVTKViewer {...vtkViewerProps} />
-                ) : (
-                  <div className="h-[600px] bg-zinc-900 rounded-lg border border-zinc-800 flex items-center justify-center text-zinc-500">
-                    {isRunning ? (
-                      <div className="flex flex-col items-center">
-                        <Loader2 className="w-8 h-8 animate-spin mb-3 text-blue-500" />
-                        Simulation en cours... ({progress}%)
-                      </div>
-                    ) : simulation?.status === 'completed' ? (
-                      <div className="flex flex-col items-center">
-                        <AlertCircle className="w-8 h-8 mb-3 text-yellow-500" />
-                        Résultats disponibles, mais le fichier VTK est manquant.
-                      </div>
-                    ) : (
-                      "Lancez la simulation pour voir le rendu 3D industriel"
-                    )}
-                  </div>
-                )}
-              </TabsContent>
-              <TabsContent value="results">
-                <Card className="bg-zinc-900 border-zinc-800">
-                  <CardHeader><CardTitle>Métriques de Simulation</CardTitle></CardHeader>
-                  <CardContent className="pt-6">
-                    {results ? (
-                      <div className="grid grid-cols-2 gap-4">
-                        <div className="p-4 bg-zinc-800 rounded-lg">
-                          <div className="text-sm text-zinc-400">Température Max</div>
-                          <div className="text-2xl font-bold text-red-500">{results.max_temperature?.toFixed(2) || 'N/A'}°C</div>
-                        </div>
-                        <div className="p-4 bg-zinc-800 rounded-lg">
-                          <div className="text-sm text-zinc-400">Score d'Incertitude</div>
-                          <div className="text-2xl font-bold text-green-500">{(results.uncertainty_score * 100)?.toFixed(2) || 'N/A'}%</div>
-                        </div>
-                        <div className="p-4 bg-zinc-800 rounded-lg">
-                          <div className="text-sm text-zinc-400">Temps de Calcul</div>
-                          <div className="text-2xl font-bold text-cyan-500">{results.computation_time_s?.toFixed(1) || 'N/A'}s</div>
-                        </div>
-                        <div className="p-4 bg-zinc-800 rounded-lg">
-                          <div className="text-sm text-zinc-400">Nombre d'Itérations</div>
-                          <div className="text-2xl font-bold text-purple-500">{results.iterations || 'N/A'}</div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="text-center py-12 text-zinc-500">Aucun résultat disponible</div>
-                    )}
-                  </CardContent>
-                </Card>
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+    // Appel à l'Edge Function
+    const { data, error } = await supabase.functions.invoke('upload-geometry', {
+      body: {
+        file_name: params.file.name,
+        file_data: fileData,
+        file_size: params.file.size,
+        file_type: params.file.type,
+        user_id: params.userId,
+        simulation_id: params.simulationId,
+      },
+      timeout: 60000, // 60 secondes
+    });
+
+    if (error) {
+      console.error('Upload geometry error:', error);
+      throw new Error(`Échec de l'upload: ${error.message || 'Erreur inconnue'}`);
+    }
+
+    return {
+      success: true,
+      fileUrl: data.file_url,
+      fileName: data.file_name,
+      fileSize: params.file.size,
+      fileType: params.file.type,
+    };
+  } catch (error: any) {
+    console.error('❌ uploadGeometry error:', error);
+    throw error;
+  }
+};
+
+// -----------------------------------------------------------------------------
+// SUPPRESSION - SÉCURISÉE
+// -----------------------------------------------------------------------------
+export const deleteSimulation = async (simulationId: string): Promise<void> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Authentification requise');
+
+    // Vérifier la propriété et l'état
+    const { data: simulation } = await supabase
+      .from('simulations')
+      .select('user_id, status')
+      .eq('id', simulationId)
+      .single();
+
+    if (!simulation) throw new Error('Simulation non trouvée');
+    if (simulation.user_id !== session.user.id) throw new Error('Permission refusée');
+    if (simulation.status === 'running') throw new Error('Impossible de supprimer une simulation en cours');
+
+    // Supprimer d'abord les résultats
+    await supabase
+      .from('simulation_results')
+      .delete()
+      .eq('simulation_id', simulationId);
+
+    // Supprimer la simulation
+    const { error } = await supabase
+      .from('simulations')
+      .delete()
+      .eq('id', simulationId)
+      .eq('user_id', session.user.id);
+
+    if (error) {
+      const supabaseError = handleSupabaseError(error, 'deleteSimulation', { simulationId });
+      throw new Error(supabaseError.userMessage);
+    }
+
+    // Nettoyer le cache
+    sessionStorage.removeItem(`simulation_${simulationId}`);
+    sessionStorage.removeItem(`simulations_${session.user.id}`);
+  } catch (error: any) {
+    console.error('❌ deleteSimulation error:', error);
+    throw error;
+  }
+};
+
+// -----------------------------------------------------------------------------
+// TEMPS RÉEL - OPTIMISÉ
+// -----------------------------------------------------------------------------
+export const subscribeToSimulation = (
+  simulationId: string,
+  callback: (payload: any) => void
+) => {
+  const channel = supabase
+    .channel(`simulation-updates-${simulationId}`)
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'simulations',
+        filter: `id=eq.${simulationId}`
+      },
+      (payload) => {
+        console.log('Simulation update:', payload);
+        callback(payload);
+      }
+    )
+    .on(
+      'postgres_changes',
+      {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'simulation_results',
+        filter: `simulation_id=eq.${simulationId}`
+      },
+      (payload) => {
+        console.log('Simulation result added:', payload);
+        callback(payload);
+      }
+    )
+    .subscribe((status) => {
+      console.log(`Subscription status for ${simulationId}:`, status);
+    });
+
+  return channel;
+};
+
+export const unsubscribeFromChannel = (channel: any) => {
+  if (channel) {
+    supabase.removeChannel(channel);
+  }
+};
+
+// -----------------------------------------------------------------------------
+// FONCTIONS UTILITAIRES
+// -----------------------------------------------------------------------------
+export const checkSimulationPermissions = async (simulationId: string): Promise<boolean> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) return false;
+
+    const { data } = await supabase
+      .from('simulations')
+      .select('id')
+      .eq('id', simulationId)
+      .eq('user_id', session.user.id)
+      .single();
+
+    return !!data;
+  } catch (error) {
+    console.error('Permission check error:', error);
+    return false;
+  }
+};
+
+export const getSimulationStatistics = async (userId: string) => {
+  try {
+    const { data, error } = await supabase
+      .from('simulations')
+      .select('status, created_at')
+      .eq('user_id', userId);
+
+    if (error) throw error;
+
+    const stats = {
+      total: data.length,
+      completed: data.filter(s => s.status === 'completed').length,
+      running: data.filter(s => s.status === 'running').length,
+      failed: data.filter(s => s.status === 'failed').length,
+      pending: data.filter(s => s.status === 'pending').length,
+      last30Days: data.filter(s => {
+        const created = new Date(s.created_at);
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        return created >= thirtyDaysAgo;
+      }).length,
+    };
+
+    return stats;
+  } catch (error) {
+    console.error('Statistics error:', error);
+    throw error;
+  }
+};
+
+export const cancelSimulation = async (simulationId: string): Promise<void> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Authentification requise');
+
+    // Vérifier la propriété
+    const { data: simulation } = await supabase
+      .from('simulations')
+      .select('user_id, status')
+      .eq('id', simulationId)
+      .single();
+
+    if (!simulation) throw new Error('Simulation non trouvée');
+    if (simulation.user_id !== session.user.id) throw new Error('Permission refusée');
+    if (simulation.status !== 'running') throw new Error('Seules les simulations en cours peuvent être annulées');
+
+    // Mettre à jour le statut
+    const { error } = await supabase
+      .from('simulations')
+      .update({
+        status: 'cancelled',
+        progress: 0,
+        error_message: 'Annulé par l\'utilisateur',
+        completed_at: new Date().toISOString(),
+      })
+      .eq('id', simulationId);
+
+    if (error) throw error;
+
+    // Nettoyer le cache
+    sessionStorage.removeItem(`simulation_${simulationId}`);
+  } catch (error: any) {
+    console.error('❌ cancelSimulation error:', error);
+    throw error;
+  }
+};
+
+export const cloneSimulation = async (simulationId: string): Promise<Simulation> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Authentification requise');
+
+    // Récupérer la simulation originale
+    const original = await getSimulationById(simulationId);
+    if (!original) throw new Error('Simulation originale non trouvée');
+
+    // Créer une nouvelle simulation basée sur l'originale
+    const clonedSimulation = {
+      user_id: session.user.id,
+      name: `${original.name} (Copie)`,
+      description: original.description,
+      geometry_type: original.geometry_type,
+      geometry_config: original.geometry_config,
+      boundary_conditions: original.boundary_conditions,
+      material_id: original.material_id,
+      mesh_density: original.mesh_density,
+      solver_type: original.solver_type,
+      status: 'pending' as SimulationStatus,
+      progress: 0,
+    };
+
+    const { data, error } = await supabase
+      .from('simulations')
+      .insert(clonedSimulation)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    return data;
+  } catch (error: any) {
+    console.error('❌ cloneSimulation error:', error);
+    throw error;
+  }
+};
+
+// -----------------------------------------------------------------------------
+// EXPORT PAR DÉFAUT
+// -----------------------------------------------------------------------------
+const SimulationService = {
+  getSimulations,
+  getSimulationById,
+  getSimulationResults,
+  createSimulation,
+  updateSimulation,
+  startSimulation,
+  uploadGeometry,
+  deleteSimulation,
+  subscribeToSimulation,
+  unsubscribeFromChannel,
+  checkSimulationPermissions,
+  getSimulationStatistics,
+  cancelSimulation,
+  cloneSimulation,
+};
+
+export default SimulationService;
