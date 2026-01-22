@@ -1152,4 +1152,6 @@ export const IndustrialVTKViewer: React.FC<IndustrialVTKViewerProps> = ({
   );
 };
 
-export default React.memo(IndustrialVTKViewer);
+const VTKViewer = React.memo(IndustrialVTKViewer);
+export { VTKViewer };
+export default VTKViewer;
