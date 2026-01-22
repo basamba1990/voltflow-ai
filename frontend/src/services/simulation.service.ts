@@ -1,544 +1,322 @@
-import { supabase, handleSupabaseError } from '@/lib/supabase';
-import type { Database } from '@/lib/database.types';
+import { supabase, handleSupabaseError } from '@/lib/supabase'
+import type { Database } from '@/lib/database.types'
 
-export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
-  simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
-};
-export type SimulationInsert = Database['public']['Tables']['simulations']['Insert'];
-export type SimulationUpdate = Database['public']['Tables']['simulations']['Update'];
-export type SimulationResult = Database['public']['Tables']['simulation_results']['Row'];
+export type Material = Database['public']['Tables']['materials']['Row']
+export type MaterialInsert = Database['public']['Tables']['materials']['Insert']
+export type MaterialUpdate = Database['public']['Tables']['materials']['Update']
 
-export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type MeshDensity = 'low' | 'medium' | 'high';
-export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
-export type FluidType = 'air' | 'water' | 'oil';
-
-export interface SimulationConfig {
-  geometry_config: {
-    type: string;
-    file_url?: string;
-    file_name?: string;
-    dimensions?: Record<string, number>;
-  };
-  boundary_conditions: {
-    initial_temp: number;
-    ambient_temp: number;
-    cooling_type: CoolingType;
-    convection_coeff: number;
-    fluid_type: FluidType;
-    fluid_velocity: number;
-  };
-  material_id: string;
-  mesh_density: MeshDensity;
+export interface MaterialProperties {
+  density: number;            // kg/m³
+  conductivity: number;       // W/(m·K)
+  specific_heat: number;      // J/(kg·K)
+  youngs_modulus: number;     // GPa
+  poisson_ratio: number;      // Dimensionless
+  thermal_expansion: number;  // 10^-6/K
+  emissivity: number;         // Dimensionless
 }
 
-export interface CreateSimulationParams {
-  name: string;
-  description?: string;
-  geometryType: string;
-  config: SimulationConfig;
-}
+export class MaterialService {
+  private static cache = new Map<string, { data: Material[]; timestamp: number }>()
+  private static CACHE_DURATION = 5 * 60 * 1000 // 5 minutes
 
-export interface StartSimulationResponse {
-  success: boolean;
-  simulation_id: string;
-  status: SimulationStatus;
-  results?: any;
-  message?: string;
-}
-
-// -----------------------------------------------------------------------------
-// FONCTIONS DE RÉCUPÉRATION - CORRECTIONS CRITIQUES APPLIQUÉES
-// -----------------------------------------------------------------------------
-
-export const getSimulations = async (
-  options: {
+  static async getMaterials(options?: {
+    refresh?: boolean;
     limit?: number;
-    status?: SimulationStatus;
-    offset?: number;
-  } = {}
-): Promise<Simulation[]> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
+    category?: string;
+  }): Promise<Material[]> {
+    const cacheKey = 'all_materials'
+    const now = Date.now()
     
-    const { limit = 10, status, offset = 0 } = options;
-    
-    let query = supabase
-      .from('simulations')
-      .select(`
-        *,
-        simulation_results (*)
-      `)
-      // CORRECTION CRITIQUE : utiliser user_id au lieu de id
-      .eq('user_id', session.user.id)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-    
-    if (status) {
-      query = query.eq('status', status);
-    }
-    
-    const { data, error } = await query;
-    
-    if (error) {
-      const supabaseError = handleSupabaseError(error, 'getSimulations', {
-        userId: session.user.id,
-        options
-      });
-      throw new Error(supabaseError.userMessage);
-    }
-    
-    return data || [];
-  } catch (error: any) {
-    console.error('❌ getSimulations error:', error);
-    throw error;
-  }
-};
-
-export const getSimulationById = async (simulationId: string): Promise<Simulation | null> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
-    
-    const { data, error } = await supabase
-      .from('simulations')
-      .select(`
-        *,
-        simulation_results (*)
-      `)
-      .eq('id', simulationId)
-      .eq('user_id', session.user.id) // AJOUT: Sécurité - vérifier que l'utilisateur est propriétaire
-      .single();
-    
-    if (error) {
-      if (error.code === 'PGRST116') return null;
-      const supabaseError = handleSupabaseError(error, 'getSimulationById', { simulationId });
-      throw new Error(supabaseError.userMessage);
-    }
-    
-    return data;
-  } catch (error: any) {
-    console.error('❌ getSimulationById error:', error);
-    throw error;
-  }
-};
-
-export const getSimulationResults = async (simulationId: string): Promise<SimulationResult | null> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
-    
-    const { data, error } = await supabase
-      .from('simulation_results')
-      .select('*')
-      .eq('simulation_id', simulationId)
-      // AJOUT: Joindre avec la table simulations pour vérifier les permissions
-      .in('simulation_id', 
-        supabase
-          .from('simulations')
-          .select('id')
-          .eq('user_id', session.user.id)
-      )
-      .maybeSingle();
-    
-    if (error) {
-      const supabaseError = handleSupabaseError(error, 'getSimulationResults', { simulationId });
-      throw new Error(supabaseError.userMessage);
-    }
-    
-    return data;
-  } catch (error: any) {
-    console.error('❌ getSimulationResults error:', error);
-    throw error;
-  }
-};
-
-// -----------------------------------------------------------------------------
-// CRÉATION ET MISE À JOUR
-// -----------------------------------------------------------------------------
-
-export const createSimulation = async (
-  params: CreateSimulationParams
-): Promise<Simulation> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
-    
-    // Validation des données
-    if (!params.name?.trim()) throw new Error('Le nom de la simulation est requis');
-    if (!params.config.material_id) throw new Error('Le matériau est requis');
-    
-    const newSimulation = {
-      user_id: session.user.id,
-      name: params.name.trim(),
-      description: params.description?.trim() || null,
-      geometry_type: params.geometryType || 'tube',
-      geometry_config: params.config.geometry_config || { type: 'tube' },
-      boundary_conditions: params.config.boundary_conditions,
-      material_id: params.config.material_id,
-      mesh_density: params.config.mesh_density || 'low',
-      status: 'pending' as SimulationStatus,
-      progress: 0
-    };
-    
-    console.log('Creating simulation with:', newSimulation);
-    
-    const { data, error } = await supabase
-      .from('simulations')
-      .insert(newSimulation)
-      .select()
-      .single();
-    
-    if (error) {
-      const supabaseError = handleSupabaseError(error, 'createSimulation', {
-        userId: session.user.id,
-        simulationName: params.name
-      });
-      throw new Error(supabaseError.userMessage);
-    }
-    
-    return data;
-  } catch (error: any) {
-    console.error('❌ createSimulation error:', error);
-    throw error;
-  }
-};
-
-export const updateSimulation = async (
-  simulationId: string, 
-  params: Partial<CreateSimulationParams>
-): Promise<Simulation> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
-    
-    const updateData: any = {};
-    
-    if (params.name !== undefined) updateData.name = params.name.trim();
-    if (params.description !== undefined) updateData.description = params.description?.trim() || null;
-    if (params.geometryType !== undefined) updateData.geometry_type = params.geometryType;
-    
-    if (params.config) {
-      updateData.geometry_config = params.config.geometry_config;
-      updateData.boundary_conditions = params.config.boundary_conditions;
-      updateData.material_id = params.config.material_id;
-      updateData.mesh_density = params.config.mesh_density;
-    }
-    
-    const { data, error } = await supabase
-      .from('simulations')
-      .update(updateData)
-      .eq('id', simulationId)
-      .eq('user_id', session.user.id)
-      .select()
-      .single();
-    
-    if (error) {
-      const supabaseError = handleSupabaseError(error, 'updateSimulation', { simulationId });
-      throw new Error(supabaseError.userMessage);
-    }
-    
-    return data;
-  } catch (error: any) {
-    console.error('❌ updateSimulation error:', error);
-    throw error;
-  }
-};
-
-// -----------------------------------------------------------------------------
-// LANCEMENT DE SIMULATION
-// -----------------------------------------------------------------------------
-
-export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
-    
-    // 1. Vérifier l'existence et le statut
-    const { data: simulation, error: fetchError } = await supabase
-      .from('simulations')
-      .select('status, geometry_config, boundary_conditions, material_id, mesh_density')
-      .eq('id', simulationId)
-      .eq('user_id', session.user.id)
-      .single();
-    
-    if (fetchError) {
-      if (fetchError.code === 'PGRST116') {
-        throw new Error('Simulation non trouvée');
+    // Vérifier le cache
+    if (!options?.refresh && this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey)!
+      if (now - cached.timestamp < this.CACHE_DURATION) {
+        return cached.data
       }
-      throw new Error(`Erreur de récupération: ${fetchError.message}`);
     }
-    
-    // 2. Empêcher les doublons
-    if (simulation.status === 'running') {
-      throw new Error('Une simulation est déjà en cours');
-    }
-    
-    // 3. Mettre à jour le statut immédiatement
-    await supabase
-      .from('simulations')
-      .update({ 
-        status: 'running',
-        progress: 0,
-        error_message: null
-      })
-      .eq('id', simulationId);
-    
-    // 4. Préparer la configuration
-    const config = {
-      geometry_config: simulation.geometry_config,
-      boundary_conditions: simulation.boundary_conditions,
-      material_id: simulation.material_id,
-      mesh_density: simulation.mesh_density
-    };
-    
-    // 5. Appeler l'Edge Function
-    const { data, error } = await supabase.functions.invoke('simulate', {
-      body: { 
-        simulation_id: simulationId,
-        config: config
+
+    try {
+      let query = supabase
+        .from('materials')
+        .select('*')
+        .order('name', { ascending: true })
+        .order('created_at', { ascending: false })
+
+      if (options?.limit) {
+        query = query.limit(options.limit)
       }
-    });
-    
-    if (error) {
-      console.error('Edge Function invocation error:', error);
+
+      if (options?.category) {
+        query = query.eq('category', options.category)
+      }
+
+      const { data, error } = await query
+
+      if (error) {
+        const supabaseError = handleSupabaseError(error, 'getMaterials', options)
+        throw new Error(supabaseError.userMessage || `Failed to fetch materials: ${error.message}`)
+      }
+
+      const materials = data || []
       
-      // Marquer comme échoué en cas d'erreur d'appel
-      await supabase
-        .from('simulations')
-        .update({ 
-          status: 'failed', 
-          progress: 0,
-          error_message: error.message || 'Erreur lors de l\'appel'
+      // Mettre en cache
+      this.cache.set(cacheKey, { data: materials, timestamp: now })
+      
+      // Mettre en cache individuellement
+      materials.forEach(material => {
+        this.cache.set(`material_${material.id}`, { 
+          data: [material], 
+          timestamp: now 
         })
-        .eq('id', simulationId);
+      })
+
+      return materials
+    } catch (error: any) {
+      console.error('❌ getMaterials error:', error)
       
-      throw new Error(`Échec du lancement: ${error.message || 'Erreur inconnue'}`);
+      // En cas d'erreur, essayer de retourner le cache même si expiré
+      if (this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey)!
+        console.warn('⚠️ Returning cached materials due to error')
+        return cached.data
+      }
+      
+      throw error
     }
+  }
+
+  static async getMaterialById(id: string, options?: { refresh?: boolean }): Promise<Material> {
+    const cacheKey = `material_${id}`
+    const now = Date.now()
     
-    // 6. Retourner la réponse
+    // Vérifier le cache
+    if (!options?.refresh && this.cache.has(cacheKey)) {
+      const cached = this.cache.get(cacheKey)!
+      if (now - cached.timestamp < this.CACHE_DURATION) {
+        return cached.data[0]
+      }
+    }
+
+    try {
+      const { data, error } = await supabase
+        .from('materials')
+        .select('*')
+        .eq('id', id)
+        .single()
+
+      if (error) {
+        if (error.code === 'PGRST116') {
+          throw new Error(`Material with ID ${id} not found`)
+        }
+        const supabaseError = handleSupabaseError(error, 'getMaterialById', { id })
+        throw new Error(supabaseError.userMessage || `Failed to fetch material: ${error.message}`)
+      }
+
+      // Mettre en cache
+      this.cache.set(cacheKey, { data: [data], timestamp: now })
+      
+      return data
+    } catch (error: any) {
+      console.error(`❌ getMaterialById error for ${id}:`, error)
+      
+      // Essayer de retourner le cache même si expiré
+      if (this.cache.has(cacheKey)) {
+        const cached = this.cache.get(cacheKey)!
+        console.warn('⚠️ Returning cached material due to error')
+        return cached.data[0]
+      }
+      
+      throw error
+    }
+  }
+
+  static async getMaterialProperties(id: string): Promise<MaterialProperties> {
+    const material = await this.getMaterialById(id)
+    
     return {
-      success: data?.success || false,
-      simulation_id: simulationId,
-      status: data?.status || 'running',
-      results: data?.results,
-      message: data?.message || 'Simulation lancée avec succès'
-    };
-    
-  } catch (error: any) {
-    console.error('❌ startSimulation error:', error);
-    throw error;
-  }
-};
-
-/**
- * Upload a geometry file (STL, STEP, OBJ) to the Edge Function
- */
-export const uploadGeometry = async (params: {
-  file: File,
-  userId: string,
-  simulationId?: string
-}): Promise<{ success: boolean, fileUrl: string, fileName: string }> => {
-  const reader = new FileReader();
-  const fileData = await new Promise<string>((resolve) => {
-    reader.onload = () => {
-      const binary = reader.result as string;
-      resolve(btoa(binary));
-    };
-    reader.readAsBinaryString(params.file);
-  });
-
-  const { data, error } = await supabase.functions.invoke('upload-geometry', {
-    body: {
-      file_name: params.file.name,
-      file_data: fileData,
-      user_id: params.userId,
-      simulation_id: params.simulationId
+      density: material.density || 7800, // Valeurs par défaut pour l'acier
+      conductivity: material.conductivity || 50,
+      specific_heat: material.specific_heat || 500,
+      youngs_modulus: material.youngs_modulus || 210,
+      poisson_ratio: material.poisson_ratio || 0.3,
+      thermal_expansion: material.thermal_expansion || 12,
+      emissivity: material.emissivity || 0.8,
     }
-  });
+  }
 
-  if (error) throw error;
-  return data;
-};
+  static async searchMaterials(query: string): Promise<Material[]> {
+    try {
+      const { data, error } = await supabase
+        .from('materials')
+        .select('*')
+        .or(`name.ilike.%${query}%,description.ilike.%${query}%,category.ilike.%${query}%`)
+        .order('name', { ascending: true })
+        .limit(20)
 
-// -----------------------------------------------------------------------------
-// SUPPRESSION
-// -----------------------------------------------------------------------------
+      if (error) {
+        const supabaseError = handleSupabaseError(error, 'searchMaterials', { query })
+        throw new Error(supabaseError.userMessage || `Search failed: ${error.message}`)
+      }
 
-export const deleteSimulation = async (simulationId: string): Promise<void> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
-    
-    // Vérifier que l'utilisateur est propriétaire
-    const { data: simulation } = await supabase
-      .from('simulations')
-      .select('user_id, status')
-      .eq('id', simulationId)
-      .single();
-    
-    if (!simulation) throw new Error('Simulation non trouvée');
-    if (simulation.user_id !== session.user.id) throw new Error('Permission refusée');
-    if (simulation.status === 'running') throw new Error('Impossible de supprimer une simulation en cours');
-    
-    // Supprimer d'abord les résultats
-    await supabase
-      .from('simulation_results')
-      .delete()
-      .eq('simulation_id', simulationId);
-    
-    // Supprimer la simulation
-    const { error } = await supabase
-      .from('simulations')
-      .delete()
-      .eq('id', simulationId)
-      .eq('user_id', session.user.id);
-    
-    if (error) {
-      const supabaseError = handleSupabaseError(error, 'deleteSimulation', { simulationId });
-      throw new Error(supabaseError.userMessage);
+      return data || []
+    } catch (error: any) {
+      console.error('❌ searchMaterials error:', error)
+      throw error
     }
-  } catch (error: any) {
-    console.error('❌ deleteSimulation error:', error);
-    throw error;
   }
-};
 
-// -----------------------------------------------------------------------------
-// TEMPS RÉEL - AMÉLIORÉ POUR L'ÉDITEUR
-// -----------------------------------------------------------------------------
+  static async getMaterialCategories(): Promise<string[]> {
+    try {
+      const { data, error } = await supabase
+        .from('materials')
+        .select('category')
+        .not('category', 'is', null)
+        .order('category', { ascending: true })
 
-export const subscribeToSimulation = (
-  simulationId: string,
-  callback: (payload: any) => void
-) => {
-  const channel = supabase
-    .channel(`simulation-updates-${simulationId}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*', // Écouter tous les événements
-        schema: 'public',
-        table: 'simulations',
-        filter: `id=eq.${simulationId}`
-      },
-      callback
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'simulation_results',
-        filter: `simulation_id=eq.${simulationId}`
-      },
-      callback
-    )
-    .subscribe((status) => {
-      console.log(`Subscription status for ${simulationId}:`, status);
-    });
-  
-  return channel;
-};
+      if (error) {
+        const supabaseError = handleSupabaseError(error, 'getMaterialCategories')
+        throw new Error(supabaseError.userMessage || `Failed to fetch categories: ${error.message}`)
+      }
 
-export const unsubscribeFromChannel = (channel: any) => {
-  if (channel) {
-    supabase.removeChannel(channel);
-  }
-};
-
-// -----------------------------------------------------------------------------
-// NOUVELLES FONCTIONS UTILITAIRES
-// -----------------------------------------------------------------------------
-
-/**
- * Vérifie les permissions RLS pour l'utilisateur actuel
- */
-export const checkRLSPermissions = async (): Promise<boolean> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) return false;
-    
-    // Test de lecture sur simulations
-    const { error: simError } = await supabase
-      .from('simulations')
-      .select('id')
-      .eq('user_id', session.user.id)
-      .limit(1);
-    
-    if (simError) {
-      console.error('RLS error on simulations:', simError);
-      return false;
+      // Extraire les catégories uniques
+      const categories = [...new Set(data?.map(item => item.category).filter(Boolean) as string[])]
+      return categories
+    } catch (error: any) {
+      console.error('❌ getMaterialCategories error:', error)
+      return []
     }
-    
-    // Test de lecture sur simulation_results via jointure
-    const { error: resultsError } = await supabase
-      .from('simulation_results')
-      .select(`
-        *,
-        simulations!inner(user_id)
-      `)
-      .eq('simulations.user_id', session.user.id)
-      .limit(1);
-    
-    if (resultsError) {
-      console.error('RLS error on simulation_results:', resultsError);
-      return false;
+  }
+
+  static async createMaterial(material: Omit<MaterialInsert, 'id' | 'created_at' | 'updated_at'>): Promise<Material> {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user) throw new Error('Authentication required')
+
+      // Validation
+      if (!material.name?.trim()) throw new Error('Material name is required')
+      if (!material.density || material.density <= 0) throw new Error('Valid density is required')
+      if (!material.conductivity || material.conductivity <= 0) throw new Error('Valid conductivity is required')
+
+      const newMaterial = {
+        ...material,
+        created_by: session.user.id,
+        updated_by: session.user.id,
+      }
+
+      const { data, error } = await supabase
+        .from('materials')
+        .insert(newMaterial)
+        .select()
+        .single()
+
+      if (error) {
+        const supabaseError = handleSupabaseError(error, 'createMaterial', {
+          name: material.name
+        })
+        throw new Error(supabaseError.userMessage || `Failed to create material: ${error.message}`)
+      }
+
+      // Invalider le cache
+      this.cache.clear()
+
+      return data
+    } catch (error: any) {
+      console.error('❌ createMaterial error:', error)
+      throw error
     }
-    
-    return true;
-  } catch (error) {
-    console.error('RLS check error:', error);
-    return false;
   }
-};
 
-/**
- * Récupère les dernières simulations avec statut complet
- */
-export const getCompletedSimulations = async (limit: number = 5): Promise<Simulation[]> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
-    
-    const { data, error } = await supabase
-      .from('simulations')
-      .select(`
-        *,
-        simulation_results (*)
-      `)
-      .eq('user_id', session.user.id)
-      .eq('status', 'completed')
-      .order('created_at', { ascending: false })
-      .limit(limit);
-    
-    if (error) throw error;
-    
-    return data || [];
-  } catch (error: any) {
-    console.error('❌ getCompletedSimulations error:', error);
-    throw error;
+  static async updateMaterial(id: string, updates: MaterialUpdate): Promise<Material> {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user) throw new Error('Authentication required')
+
+      const updateData = {
+        ...updates,
+        updated_by: session.user.id,
+        updated_at: new Date().toISOString(),
+      }
+
+      const { data, error } = await supabase
+        .from('materials')
+        .update(updateData)
+        .eq('id', id)
+        .select()
+        .single()
+
+      if (error) {
+        const supabaseError = handleSupabaseError(error, 'updateMaterial', { id })
+        throw new Error(supabaseError.userMessage || `Failed to update material: ${error.message}`)
+      }
+
+      // Invalider le cache
+      this.cache.clear()
+      this.cache.delete(`material_${id}`)
+
+      return data
+    } catch (error: any) {
+      console.error(`❌ updateMaterial error for ${id}:`, error)
+      throw error
+    }
   }
-};
 
-// -----------------------------------------------------------------------------
-// EXPORT PAR DÉFAUT
-// -----------------------------------------------------------------------------
+  static async deleteMaterial(id: string): Promise<void> {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.user) throw new Error('Authentication required')
 
-const SimulationService = {
-  getSimulations,
-  getSimulationById,
-  getSimulationResults,
-  createSimulation,
-  updateSimulation,
-  startSimulation,
-  uploadGeometry,
-  deleteSimulation,
-  subscribeToSimulation,
-  unsubscribeFromChannel,
-  checkRLSPermissions,
-  getCompletedSimulations
-};
+      const { error } = await supabase
+        .from('materials')
+        .delete()
+        .eq('id', id)
 
-export default SimulationService;
+      if (error) {
+        const supabaseError = handleSupabaseError(error, 'deleteMaterial', { id })
+        throw new Error(supabaseError.userMessage || `Failed to delete material: ${error.message}`)
+      }
+
+      // Invalider le cache
+      this.cache.clear()
+      this.cache.delete(`material_${id}`)
+    } catch (error: any) {
+      console.error(`❌ deleteMaterial error for ${id}:`, error)
+      throw error
+    }
+  }
+
+  static clearCache(): void {
+    this.cache.clear()
+  }
+
+  static async validateMaterialProperties(properties: Partial<MaterialProperties>): Promise<string[]> {
+    const errors: string[] = []
+
+    if (properties.density !== undefined && properties.density <= 0) {
+      errors.push('Density must be positive')
+    }
+
+    if (properties.conductivity !== undefined && properties.conductivity <= 0) {
+      errors.push('Conductivity must be positive')
+    }
+
+    if (properties.specific_heat !== undefined && properties.specific_heat <= 0) {
+      errors.push('Specific heat must be positive')
+    }
+
+    if (properties.youngs_modulus !== undefined && properties.youngs_modulus <= 0) {
+      errors.push("Young's modulus must be positive")
+    }
+
+    if (properties.poisson_ratio !== undefined && 
+        (properties.poisson_ratio < -1 || properties.poisson_ratio > 0.5)) {
+      errors.push("Poisson's ratio must be between -1 and 0.5")
+    }
+
+    if (properties.emissivity !== undefined && 
+        (properties.emissivity < 0 || properties.emissivity > 1)) {
+      errors.push('Emissivity must be between 0 and 1')
+    }
+
+    return errors
+  }
+}
