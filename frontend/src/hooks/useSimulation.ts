@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { toast } from 'sonner';
+import SimulationService from '@/services/simulation.service'; // Import du service
 
 interface UseSimulationOptions {
   realtime?: boolean;
@@ -19,22 +20,22 @@ export const useSimulation = (simulationId: string, options: UseSimulationOption
     if (!simulationId) return;
     
     try {
-      const { data, error } = await supabase
-        .from('simulations')
-        .select(`
-          *,
-          simulation_results (*),
-          materials (*)
-        `)
-        .eq('id', simulationId)
-        .single();
+      // Utilisation du service pour récupérer la simulation
+      const data = await SimulationService.getSimulationById(simulationId);
 
-      if (error) throw error;
+      if (!data) {
+        setSimulation(null);
+        setResults(null);
+        setIsRunning(false);
+        return;
+      }
 
       setSimulation(data);
       
       if (data.simulation_results && data.simulation_results.length > 0) {
         setResults(data.simulation_results[0]);
+      } else {
+        setResults(null);
       }
 
       setIsRunning(data.status === 'running');
@@ -52,29 +53,27 @@ export const useSimulation = (simulationId: string, options: UseSimulationOption
   }, [simulationId, options]);
 
   const startSimulation = useCallback(async () => {
+    if (!simulationId) return;
     try {
       setIsRunning(true);
       setProgress(0);
       
-      const { error } = await supabase.functions.invoke('simulate-complex', {
-        body: {
-          simulation_id: simulationId,
-          config: simulation?.geometry_config || {},
-        },
-      });
+      // Utilisation du service pour lancer la simulation
+      await SimulationService.startSimulation(simulationId);
 
-      if (error) throw error;
-
-      toast.success('Simulation started');
+      toast.success('Simulation lancée');
     } catch (err: any) {
       setError(err.message);
-      toast.error('Failed to start simulation');
+      toast.error(`Échec du lancement: ${err.message}`);
       setIsRunning(false);
+      fetchSimulation(); // Rafraîchir pour obtenir le statut d'erreur
     }
-  }, [simulationId, simulation]);
+  }, [simulationId, fetchSimulation]);
 
   const cancelSimulation = useCallback(async () => {
+    if (!simulationId) return;
     try {
+      // Le service de simulation ne gère pas directement l'annulation, on utilise Supabase
       const { error } = await supabase
         .from('simulations')
         .update({ status: 'cancelled' })
@@ -83,52 +82,63 @@ export const useSimulation = (simulationId: string, options: UseSimulationOption
       if (error) throw error;
 
       setIsRunning(false);
-      toast.info('Simulation cancelled');
+      toast.info('Simulation annulée');
+      fetchSimulation();
     } catch (err: any) {
       setError(err.message);
-      toast.error('Failed to cancel simulation');
+      toast.error('Échec de l\'annulation de la simulation');
+    }
+  }, [simulationId, fetchSimulation]);
+
+  const deleteSimulation = useCallback(async () => {
+    if (!simulationId) return;
+    try {
+      await SimulationService.deleteSimulation(simulationId);
+      toast.success('Simulation supprimée');
+      // Réinitialiser l'état après la suppression
+      setSimulation(null);
+      setResults(null);
+      setIsRunning(false);
+      setProgress(0);
+    } catch (err: any) {
+      setError(err.message);
+      toast.error(`Échec de la suppression: ${err.message}`);
+      throw err; // Propager l'erreur pour que l'éditeur puisse gérer la redirection
     }
   }, [simulationId]);
 
   useEffect(() => {
     if (!options.realtime || !simulationId) return;
 
-    const channel = supabase
-      .channel(`simulation-${simulationId}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'simulations',
-          filter: `id=eq.${simulationId}`,
-        },
-        (payload) => {
-          const newData = payload.new;
-          setSimulation((prev: any) => ({ ...prev, ...newData }));
-          
-          if (newData.status === 'running') {
-            setIsRunning(true);
-            setProgress(newData.progress || 0);
-            if (options.onProgress) {
-              options.onProgress(newData.progress, newData.status);
-            }
-          } else {
-            setIsRunning(false);
+    const channel = SimulationService.subscribeToSimulation(simulationId, (payload) => {
+      const newData = payload.new || payload.record;
+      
+      if (payload.table === 'simulations') {
+        setSimulation((prev: any) => ({ ...prev, ...newData }));
+        
+        if (newData.status === 'running') {
+          setIsRunning(true);
+          setProgress(newData.progress || 0);
+          if (options.onProgress) {
+            options.onProgress(newData.progress, newData.status);
           }
-
-          if (newData.status === 'completed') {
-            toast.success('Simulation completed');
-            fetchSimulation();
-          } else if (newData.status === 'failed') {
-            toast.error(`Simulation failed: ${newData.error_message}`);
-          }
+        } else {
+          setIsRunning(false);
         }
-      )
-      .subscribe();
+
+        if (newData.status === 'completed') {
+          toast.success('Simulation terminée');
+          fetchSimulation();
+        } else if (newData.status === 'failed') {
+          toast.error(`Simulation échouée: ${newData.error_message}`);
+        }
+      } else if (payload.table === 'simulation_results' && payload.eventType === 'INSERT') {
+        setResults(newData);
+      }
+    });
 
     return () => {
-      supabase.removeChannel(channel);
+      SimulationService.unsubscribeFromChannel(channel);
     };
   }, [simulationId, options.realtime, options.onProgress, fetchSimulation]);
 
@@ -144,6 +154,7 @@ export const useSimulation = (simulationId: string, options: UseSimulationOption
     error,
     startSimulation,
     cancelSimulation,
+    deleteSimulation, // Ajout de la fonction de suppression
     refresh: fetchSimulation,
   };
 };
