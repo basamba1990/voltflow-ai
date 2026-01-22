@@ -4,7 +4,8 @@ import { toast } from 'sonner';
 import { 
   Save, Play, Download, Trash2, Thermometer, Loader2, 
   AlertCircle, ChevronLeft, UploadCloud, Box, Settings,
-  Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy
+  Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy,
+  FileUp, CheckCircle, XCircle
 } from 'lucide-react';
 
 // Services et hooks
@@ -81,6 +82,7 @@ export default function SimulationEditor() {
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<{
     position: [number, number, number];
     field_values: Record<string, number>;
@@ -195,19 +197,32 @@ export default function SimulationEditor() {
   // Gestion des fichiers
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !user?.id) return;
+    if (!file || !user?.id) {
+      toast.error('Aucun fichier sélectionné ou utilisateur non connecté');
+      return;
+    }
 
     // Validation du type de fichier
-    const validExtensions = ['.stl', '.step', '.obj', '.vtp', '.vti'];
+    const validExtensions = ['.stl', '.step', '.obj', '.vtp', '.vti', '.ply', '.vtk'];
     const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
     
     if (!validExtensions.includes(fileExt)) {
-      toast.error("Format de fichier non supporté. Utilisez STL, STEP, OBJ, VTP ou VTI.");
+      toast.error("Format de fichier non supporté. Utilisez STL, STEP, OBJ, VTP, VTI, PLY ou VTK.");
+      return;
+    }
+
+    // Validation de la taille (max 50MB)
+    const maxSize = 50 * 1024 * 1024; // 50MB
+    if (file.size > maxSize) {
+      toast.error(`Fichier trop volumineux. Maximum: ${maxSize / (1024 * 1024)} MB`);
       return;
     }
 
     try {
       setUploadingFile(true);
+      setUploadError(null);
+      
+      // Utiliser la nouvelle fonction uploadGeometry
       const result = await SimulationService.uploadGeometry({
         file,
         userId: user.id,
@@ -226,9 +241,50 @@ export default function SimulationEditor() {
       toast.success("Fichier géométrique téléchargé avec succès");
     } catch (error: any) {
       console.error('Upload error:', error);
-      toast.error(`Erreur upload: ${error.message || 'Erreur inconnue'}`);
+      const errorMessage = error.message || 'Erreur inconnue lors du téléchargement';
+      setUploadError(errorMessage);
+      toast.error(`Erreur upload: ${errorMessage}`);
     } finally {
       setUploadingFile(false);
+      // Reset le input file
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  // Fonction alternative d'upload si la première échoue
+  const handleAlternativeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user?.id) return;
+
+    try {
+      setUploadingFile(true);
+      setUploadError(null);
+      
+      // Utiliser la fonction alternative
+      const result = await SimulationService.uploadGeometryViaEdgeFunction({
+        file,
+        userId: user.id,
+        simulationId: id,
+      });
+      
+      setFormData(prev => ({
+        ...prev,
+        geometryConfig: {
+          file_url: result.fileUrl,
+          file_name: result.fileName,
+          dimensions: prev.geometryConfig.dimensions,
+        },
+      }));
+      
+      toast.success("Fichier géométrique téléchargé avec succès (méthode alternative)");
+    } catch (error: any) {
+      console.error('Alternative upload error:', error);
+      const errorMessage = error.message || 'Erreur inconnue lors du téléchargement';
+      setUploadError(errorMessage);
+      toast.error(`Erreur upload: ${errorMessage}`);
+    } finally {
+      setUploadingFile(false);
+      if (e.target) e.target.value = '';
     }
   };
 
@@ -286,12 +342,18 @@ export default function SimulationEditor() {
     try {
       setIsExporting(true);
       let url = '';
-      let filename = `simulation_${id}_${format}`;
+      let filename = `simulation_${id}_${Date.now()}_${format}`;
       
       switch (format) {
         case 'png':
-          url = results.vtk_file_url || '';
-          filename += '.png';
+          if (results.vtk_file_url) {
+            // Pour PNG, créer un lien vers l'image
+            url = results.vtk_file_url.replace('.vtp', '.png').replace('.stl', '.png');
+            filename += '.png';
+          } else {
+            toast.error('Données de visualisation non disponibles');
+            return;
+          }
           break;
         case 'csv':
           if (results.temperature_data_url) {
@@ -352,6 +414,25 @@ export default function SimulationEditor() {
     toast.success('Données copiées dans le presse-papier');
   };
 
+  // Toggle plein écran
+  const toggleFullscreen = useCallback(() => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen();
+      setViewState(prev => ({ ...prev, isFullscreen: true }));
+    } else {
+      document.exitFullscreen();
+      setViewState(prev => ({ ...prev, isFullscreen: false }));
+    }
+  }, []);
+
+  // Formatage du nom de fichier
+  const formatFileName = (fileName: string) => {
+    if (fileName.length > 30) {
+      return fileName.substring(0, 15) + '...' + fileName.substring(fileName.length - 10);
+    }
+    return fileName;
+  };
+
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
@@ -390,7 +471,7 @@ export default function SimulationEditor() {
             <Button
               variant="outline"
               onClick={handleSave}
-              disabled={isSaving}
+              disabled={isSaving || !formData.name.trim()}
               className="min-w-[120px]"
             >
               {isSaving ? (
@@ -419,8 +500,13 @@ export default function SimulationEditor() {
                 variant="outline"
                 onClick={() => handleExport('png')}
                 disabled={isExporting}
+                className="min-w-[120px]"
               >
-                <Download className="w-4 h-4 mr-2" />
+                {isExporting ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : (
+                  <Download className="w-4 h-4 mr-2" />
+                )}
                 Exporter
               </Button>
             )}
@@ -474,34 +560,77 @@ export default function SimulationEditor() {
                 <div className="space-y-2">
                   <Label>Géométrie</Label>
                   <div className="space-y-3">
-                    <div className="flex items-center gap-2">
-                      <Input
-                        type="file"
-                        onChange={handleFileUpload}
-                        className="hidden"
-                        id="geo-upload"
-                        accept=".stl,.step,.obj,.vtp,.vti"
-                      />
-                      <Button
-                        asChild
-                        variant="secondary"
-                        disabled={uploadingFile}
-                        className="flex-1"
-                      >
-                        <label htmlFor="geo-upload" className="cursor-pointer flex items-center justify-center">
-                          {uploadingFile ? (
-                            <Loader2 className="w-4 h-4 animate-spin mr-2" />
-                          ) : (
-                            <UploadCloud className="w-4 h-4 mr-2" />
-                          )}
-                          {formData.geometryConfig.file_name || 'Choisir un fichier'}
-                        </label>
-                      </Button>
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <Input
+                          type="file"
+                          onChange={handleFileUpload}
+                          className="hidden"
+                          id="geo-upload"
+                          accept=".stl,.step,.obj,.vtp,.vti,.ply,.vtk"
+                        />
+                        <Button
+                          asChild
+                          variant="secondary"
+                          disabled={uploadingFile}
+                          className="flex-1"
+                        >
+                          <label htmlFor="geo-upload" className="cursor-pointer flex items-center justify-center gap-2">
+                            {uploadingFile ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <UploadCloud className="w-4 h-4" />
+                            )}
+                            {uploadingFile ? 'Upload en cours...' : 'Choisir un fichier'}
+                          </label>
+                        </Button>
+                      </div>
+                      
+                      <div className="text-xs text-zinc-400">
+                        Formats supportés: STL, STEP, OBJ, VTP, VTI, PLY, VTK (max 50MB)
+                      </div>
                     </div>
+                    
                     {formData.geometryConfig.file_name && (
-                      <Badge variant="outline" className="bg-green-900/20 text-green-400">
-                        ✓ {formData.geometryConfig.file_name}
-                      </Badge>
+                      <div className="flex items-center justify-between p-2 bg-green-900/20 rounded border border-green-800/50">
+                        <div className="flex items-center gap-2">
+                          <CheckCircle className="w-4 h-4 text-green-400" />
+                          <span className="text-sm truncate max-w-[200px]" title={formData.geometryConfig.file_name}>
+                            {formatFileName(formData.geometryConfig.file_name)}
+                          </span>
+                        </div>
+                        <Badge variant="outline" className="bg-green-900/30 text-green-300">
+                          ✓ Fichier chargé
+                        </Badge>
+                      </div>
+                    )}
+                    
+                    {uploadError && (
+                      <Alert variant="destructive" className="bg-red-900/20 border-red-800 p-3">
+                        <div className="flex items-center gap-2">
+                          <XCircle className="w-4 h-4" />
+                          <AlertDescription className="text-sm">
+                            {uploadError}
+                          </AlertDescription>
+                        </div>
+                        <div className="mt-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              const input = document.createElement('input');
+                              input.type = 'file';
+                              input.accept = '.stl,.step,.obj,.vtp,.vti,.ply,.vtk';
+                              input.onchange = (e) => handleAlternativeUpload(e as any);
+                              input.click();
+                            }}
+                            className="w-full text-xs"
+                          >
+                            <FileUp className="w-3 h-3 mr-2" />
+                            Essayer la méthode alternative
+                          </Button>
+                        </div>
+                      </Alert>
                     )}
                   </div>
                 </div>
@@ -515,7 +644,7 @@ export default function SimulationEditor() {
                     <SelectTrigger className="bg-zinc-800/50 border-zinc-700">
                       <SelectValue placeholder="Sélectionner un matériau" />
                     </SelectTrigger>
-                    <SelectContent className="bg-zinc-900 border-zinc-700">
+                    <SelectContent className="bg-zinc-900 border-zinc-700 max-h-[200px]">
                       {materialsData.map(material => (
                         <SelectItem
                           key={material.id}
@@ -538,6 +667,9 @@ export default function SimulationEditor() {
                       value={formData.initialTemp}
                       onChange={e => setFormData({...formData, initialTemp: e.target.value})}
                       className="bg-zinc-800/50 border-zinc-700"
+                      min="0"
+                      max="2000"
+                      step="1"
                     />
                   </div>
                   <div className="space-y-2">
@@ -548,6 +680,9 @@ export default function SimulationEditor() {
                       value={formData.ambientTemp}
                       onChange={e => setFormData({...formData, ambientTemp: e.target.value})}
                       className="bg-zinc-800/50 border-zinc-700"
+                      min="-100"
+                      max="100"
+                      step="1"
                     />
                   </div>
                 </div>
@@ -563,8 +698,25 @@ export default function SimulationEditor() {
                     </SelectTrigger>
                     <SelectContent className="bg-zinc-900 border-zinc-700">
                       <SelectItem value="low">Faible (rapide)</SelectItem>
-                      <SelectItem value="medium">Moyen</SelectItem>
+                      <SelectItem value="medium">Moyen (équilibré)</SelectItem>
                       <SelectItem value="high">Élevé (précis)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <div className="space-y-2">
+                  <Label htmlFor="solverType">Méthode de calcul</Label>
+                  <Select
+                    value={formData.solverType}
+                    onValueChange={v => setFormData({...formData, solverType: v as any})}
+                  >
+                    <SelectTrigger className="bg-zinc-800/50 border-zinc-700">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent className="bg-zinc-900 border-zinc-700">
+                      <SelectItem value="fem_fortran">FEM Fortran (recommandé)</SelectItem>
+                      <SelectItem value="openfoam">OpenFOAM</SelectItem>
+                      <SelectItem value="comsol">COMSOL</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -576,7 +728,10 @@ export default function SimulationEditor() {
               <Card className="bg-zinc-900/50 border-zinc-800 backdrop-blur-sm">
                 <CardHeader className="pb-3">
                   <CardTitle className="flex items-center justify-between text-sm">
-                    <span>Point sélectionné</span>
+                    <span className="flex items-center gap-2">
+                      <Thermometer className="w-4 h-4" />
+                      Point sélectionné
+                    </span>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -588,22 +743,57 @@ export default function SimulationEditor() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="space-y-2 text-sm">
-                    <div className="grid grid-cols-2 gap-2">
-                      <div className="text-zinc-400">X:</div>
-                      <div className="font-mono">{selectedPoint.position[0].toFixed(2)}</div>
-                      <div className="text-zinc-400">Y:</div>
-                      <div className="font-mono">{selectedPoint.position[1].toFixed(2)}</div>
-                      <div className="text-zinc-400">Z:</div>
-                      <div className="font-mono">{selectedPoint.position[2].toFixed(2)}</div>
+                  <div className="space-y-3 text-sm">
+                    <div className="grid grid-cols-3 gap-2">
+                      <div className="space-y-1">
+                        <div className="text-zinc-400 text-xs">X</div>
+                        <div className="font-mono bg-zinc-800/50 p-1 rounded text-center">
+                          {selectedPoint.position[0].toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-zinc-400 text-xs">Y</div>
+                        <div className="font-mono bg-zinc-800/50 p-1 rounded text-center">
+                          {selectedPoint.position[1].toFixed(2)}
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-zinc-400 text-xs">Z</div>
+                        <div className="font-mono bg-zinc-800/50 p-1 rounded text-center">
+                          {selectedPoint.position[2].toFixed(2)}
+                        </div>
+                      </div>
                     </div>
+                    
                     <Separator className="my-2" />
+                    
                     {Object.entries(selectedPoint.field_values).map(([key, value]) => (
-                      <div key={key} className="flex justify-between">
+                      <div key={key} className="flex justify-between items-center">
                         <span className="text-zinc-400">{key}:</span>
-                        <span className="font-medium">{value.toFixed(1)}°C</span>
+                        <div className="flex items-center gap-2">
+                          <span className={`font-medium ${
+                            key === 'temperature' 
+                              ? value > 500 ? 'text-red-500' 
+                              : value > 200 ? 'text-orange-500' 
+                              : 'text-green-500'
+                              : ''
+                          }`}>
+                            {value.toFixed(1)}°C
+                          </span>
+                          {key === 'temperature' && value > 500 && (
+                            <Badge variant="outline" className="bg-red-900/30 text-red-300 text-xs">
+                              Critique
+                            </Badge>
+                          )}
+                        </div>
                       </div>
                     ))}
+                    
+                    {selectedPoint.element_id !== undefined && (
+                      <div className="text-xs text-zinc-500 mt-2">
+                        ID élément: {selectedPoint.element_id}
+                      </div>
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -620,17 +810,20 @@ export default function SimulationEditor() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => setViewState(prev => ({ 
-                        ...prev, 
-                        isFullscreen: !prev.isFullscreen 
-                      }))}
+                      onClick={toggleFullscreen}
+                      className="flex items-center gap-2"
                     >
                       {viewState.isFullscreen ? (
-                        <Minimize2 className="w-4 h-4 mr-2" />
+                        <>
+                          <Minimize2 className="w-4 h-4" />
+                          <span>Quitter plein écran</span>
+                        </>
                       ) : (
-                        <Maximize2 className="w-4 h-4 mr-2" />
+                        <>
+                          <Maximize2 className="w-4 h-4" />
+                          <span>Plein écran</span>
+                        </>
                       )}
-                      Plein écran
                     </Button>
                     
                     <div className="flex items-center gap-2">
@@ -640,7 +833,7 @@ export default function SimulationEditor() {
                           setViewState(prev => ({ ...prev, showGrid: checked }))
                         }
                       />
-                      <Label className="text-sm">Grille</Label>
+                      <Label className="text-sm cursor-pointer">Grille</Label>
                     </div>
                     
                     <div className="flex items-center gap-2">
@@ -650,7 +843,7 @@ export default function SimulationEditor() {
                           setViewState(prev => ({ ...prev, showAxes: checked }))
                         }
                       />
-                      <Label className="text-sm">Axes</Label>
+                      <Label className="text-sm cursor-pointer">Axes</Label>
                     </div>
                   </div>
                   
@@ -663,7 +856,7 @@ export default function SimulationEditor() {
                       }))}
                     >
                       <SelectTrigger className="w-[140px] bg-zinc-800/50 border-zinc-700">
-                        <SelectValue />
+                        <SelectValue placeholder="Mode" />
                       </SelectTrigger>
                       <SelectContent className="bg-zinc-900 border-zinc-700">
                         <SelectItem value="volume">Volume</SelectItem>
@@ -681,7 +874,7 @@ export default function SimulationEditor() {
                       }))}
                     >
                       <SelectTrigger className="w-[140px] bg-zinc-800/50 border-zinc-700">
-                        <SelectValue />
+                        <SelectValue placeholder="Palette" />
                       </SelectTrigger>
                       <SelectContent className="bg-zinc-900 border-zinc-700">
                         <SelectItem value="heat">Chaleur</SelectItem>
@@ -695,7 +888,7 @@ export default function SimulationEditor() {
                 
                 <div className="mt-4">
                   <div className="flex items-center justify-between mb-2">
-                    <Label className="text-sm">Opacité</Label>
+                    <Label className="text-sm cursor-pointer">Opacité</Label>
                     <span className="text-sm text-zinc-400">{Math.round(viewState.opacity * 100)}%</span>
                   </div>
                   <Slider
@@ -714,16 +907,16 @@ export default function SimulationEditor() {
 
             {/* Onglets principaux */}
             <Tabs defaultValue="visualizer" className="w-full">
-              <TabsList className="bg-zinc-900/50 border-zinc-800">
-                <TabsTrigger value="visualizer" className="data-[state=active]:bg-zinc-800">
+              <TabsList className="bg-zinc-900/50 border-zinc-800 w-full">
+                <TabsTrigger value="visualizer" className="flex-1 data-[state=active]:bg-zinc-800">
                   <Box className="w-4 h-4 mr-2" />
                   Visualisation 3D
                 </TabsTrigger>
-                <TabsTrigger value="results" className="data-[state=active]:bg-zinc-800">
+                <TabsTrigger value="results" className="flex-1 data-[state=active]:bg-zinc-800">
                   <Thermometer className="w-4 h-4 mr-2" />
                   Résultats
                 </TabsTrigger>
-                <TabsTrigger value="details" className="data-[state=active]:bg-zinc-800">
+                <TabsTrigger value="details" className="flex-1 data-[state=active]:bg-zinc-800">
                   <Settings className="w-4 h-4 mr-2" />
                   Détails
                 </TabsTrigger>
@@ -733,8 +926,21 @@ export default function SimulationEditor() {
               <TabsContent value="visualizer" className="mt-4">
                 {prepareViewerData ? (
                   <div className={`rounded-lg overflow-hidden border border-zinc-800 ${
-                    viewState.isFullscreen ? 'fixed inset-0 z-50' : 'h-[600px]'
+                    viewState.isFullscreen ? 'fixed inset-0 z-50 bg-black' : 'h-[600px]'
                   }`}>
+                    {viewState.isFullscreen && (
+                      <div className="absolute top-4 right-4 z-10">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={toggleFullscreen}
+                          className="bg-black/50 backdrop-blur-sm"
+                        >
+                          <Minimize2 className="w-4 h-4 mr-2" />
+                          Quitter plein écran
+                        </Button>
+                      </div>
+                    )}
                     <VTKViewer
                       mesh={prepareViewerData.mesh}
                       fields={prepareViewerData.fields}
@@ -751,10 +957,15 @@ export default function SimulationEditor() {
                   </div>
                 ) : isRunning ? (
                   <div className="h-[600px] bg-zinc-900/50 border border-zinc-800 rounded-lg flex flex-col items-center justify-center text-zinc-500">
-                    <Loader2 className="w-12 h-12 animate-spin mb-4 text-blue-500" />
+                    <div className="relative">
+                      <Loader2 className="w-16 h-16 animate-spin mb-4 text-blue-500" />
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-lg font-bold">{progress}%</span>
+                      </div>
+                    </div>
                     <div className="text-center space-y-2">
                       <div className="text-lg font-semibold">Simulation en cours</div>
-                      <div className="text-sm">Chargement des données...</div>
+                      <div className="text-sm">Calcul des températures...</div>
                       {progress !== undefined && (
                         <div className="w-64 mx-auto">
                           <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
@@ -764,7 +975,7 @@ export default function SimulationEditor() {
                             />
                           </div>
                           <div className="text-xs mt-2 text-center">
-                            Progression: {progress}%
+                            Progression: {progress}% - {simulation?.solver_type || 'FEM Fortran'}
                           </div>
                         </div>
                       )}
@@ -772,27 +983,49 @@ export default function SimulationEditor() {
                   </div>
                 ) : (
                   <div className="h-[600px] bg-zinc-900/50 border border-zinc-800 rounded-lg flex flex-col items-center justify-center text-zinc-500 p-6 text-center">
-                    <div className="w-16 h-16 bg-zinc-800 rounded-full flex items-center justify-center mb-4">
-                      <Box className="w-8 h-8" />
+                    <div className="w-20 h-20 bg-zinc-800 rounded-full flex items-center justify-center mb-4">
+                      <Box className="w-10 h-10" />
                     </div>
-                    <div className="text-lg font-semibold mb-2">
-                      Aucune donnée de simulation
+                    <div className="text-xl font-semibold mb-2">
+                      {id ? 'Simulation prête' : 'Nouvelle simulation'}
                     </div>
-                    <div className="text-sm mb-4 max-w-md">
+                    <div className="text-sm mb-6 max-w-md">
                       {id 
                         ? 'Lancez la simulation pour générer les résultats et visualiser le modèle 3D.'
-                        : 'Créez et sauvegardez une simulation pour commencer.'}
+                        : 'Configurez et sauvegardez votre simulation pour commencer.'}
                     </div>
-                    {id && (
-                      <Button
-                        onClick={() => startSimulation()}
-                        disabled={isRunning}
-                        className="bg-blue-600 hover:bg-blue-700"
-                      >
-                        <Play className="w-4 h-4 mr-2" />
-                        Lancer la simulation
-                      </Button>
-                    )}
+                    <div className="flex gap-3">
+                      {id ? (
+                        <>
+                          <Button
+                            onClick={() => startSimulation()}
+                            disabled={isRunning}
+                            className="bg-blue-600 hover:bg-blue-700"
+                          >
+                            <Play className="w-4 h-4 mr-2" />
+                            Lancer la simulation
+                          </Button>
+                          {!formData.geometryConfig.file_name && (
+                            <Button
+                              variant="outline"
+                              onClick={() => document.getElementById('geo-upload')?.click()}
+                            >
+                              <UploadCloud className="w-4 h-4 mr-2" />
+                              Ajouter une géométrie
+                            </Button>
+                          )}
+                        </>
+                      ) : (
+                        <Button
+                          onClick={handleSave}
+                          disabled={!formData.name.trim()}
+                          className="bg-blue-600 hover:bg-blue-700"
+                        >
+                          <Save className="w-4 h-4 mr-2" />
+                          Créer la simulation
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 )}
               </TabsContent>
@@ -800,91 +1033,163 @@ export default function SimulationEditor() {
               {/* Onglet Résultats */}
               <TabsContent value="results" className="mt-4">
                 {results ? (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                    <Card className="bg-zinc-900/50 border-zinc-800">
-                      <CardContent className="pt-6">
-                        <div className="space-y-4">
-                          <div>
-                            <div className="text-sm text-zinc-400 mb-1">Température Maximale</div>
-                            <div className="text-3xl font-bold text-red-500">
-                              {results.max_temperature?.toFixed(1)}°C
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="pt-6">
+                          <div className="space-y-4">
+                            <div>
+                              <div className="text-sm text-zinc-400 mb-1">Température Maximale</div>
+                              <div className="text-3xl font-bold text-red-500">
+                                {results.max_temperature?.toFixed(1)}°C
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Point le plus chaud
+                              </div>
                             </div>
-                          </div>
-                          <Separator />
-                          <div>
-                            <div className="text-sm text-zinc-400 mb-1">Température Minimale</div>
-                            <div className="text-xl font-medium text-blue-500">
-                              {results.min_temperature?.toFixed(1)}°C
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card className="bg-zinc-900/50 border-zinc-800">
-                      <CardContent className="pt-6">
-                        <div className="space-y-4">
-                          <div>
-                            <div className="text-sm text-zinc-400 mb-1">Fidélité de Simulation</div>
-                            <div className="text-3xl font-bold text-green-500">
-                              {((1 - (results.uncertainty_score || 0)) * 100).toFixed(1)}%
-                            </div>
-                          </div>
-                          <Separator />
-                          <div>
-                            <div className="text-sm text-zinc-400 mb-1">Score d'incertitude</div>
-                            <div className="text-xl font-medium text-yellow-500">
-                              {(results.uncertainty_score * 100)?.toFixed(1)}%
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    <Card className="bg-zinc-900/50 border-zinc-800">
-                      <CardContent className="pt-6">
-                        <div className="space-y-4">
-                          <div>
-                            <div className="text-sm text-zinc-400 mb-1">Temps de Calcul</div>
-                            <div className="text-3xl font-bold text-cyan-500">
-                              {results.computation_time?.toFixed(1)}s
-                            </div>
-                          </div>
-                          <Separator />
-                          <div>
-                            <div className="text-sm text-zinc-400 mb-1">Points de Maillage</div>
-                            <div className="text-xl font-medium text-purple-500">
-                              {results.mesh_points?.toLocaleString() || 'N/A'}
-                            </div>
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-
-                    {/* Graphiques et données détaillées */}
-                    {results.temperature_distribution && (
-                      <Card className="md:col-span-3 bg-zinc-900/50 border-zinc-800">
-                        <CardHeader>
-                          <CardTitle>Distribution des Températures</CardTitle>
-                        </CardHeader>
-                        <CardContent>
-                          <div className="h-64 flex items-center justify-center border border-zinc-800 rounded-lg p-4">
-                            <div className="text-center text-zinc-500">
-                              Graphique de distribution à implémenter
+                            <Separator />
+                            <div>
+                              <div className="text-sm text-zinc-400 mb-1">Température Minimale</div>
+                              <div className="text-xl font-medium text-blue-500">
+                                {results.min_temperature?.toFixed(1)}°C
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Point le plus froid
+                              </div>
                             </div>
                           </div>
                         </CardContent>
                       </Card>
-                    )}
+
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="pt-6">
+                          <div className="space-y-4">
+                            <div>
+                              <div className="text-sm text-zinc-400 mb-1">Fidélité de Simulation</div>
+                              <div className={`text-3xl font-bold ${
+                                ((1 - (results.uncertainty_score || 0)) * 100) > 95 ? 'text-green-500' :
+                                ((1 - (results.uncertainty_score || 0)) * 100) > 80 ? 'text-yellow-500' :
+                                'text-red-500'
+                              }`}>
+                                {((1 - (results.uncertainty_score || 0)) * 100).toFixed(1)}%
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Précision du modèle
+                              </div>
+                            </div>
+                            <Separator />
+                            <div>
+                              <div className="text-sm text-zinc-400 mb-1">Score d'incertitude</div>
+                              <div className="text-xl font-medium text-yellow-500">
+                                {(results.uncertainty_score * 100)?.toFixed(1)}%
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Marge d'erreur
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="pt-6">
+                          <div className="space-y-4">
+                            <div>
+                              <div className="text-sm text-zinc-400 mb-1">Temps de Calcul</div>
+                              <div className="text-3xl font-bold text-cyan-500">
+                                {results.computation_time?.toFixed(1)}s
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Durée d'exécution
+                              </div>
+                            </div>
+                            <Separator />
+                            <div>
+                              <div className="text-sm text-zinc-400 mb-1">Points de Maillage</div>
+                              <div className="text-xl font-medium text-purple-500">
+                                {results.mesh_points?.toLocaleString() || 'N/A'}
+                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">
+                                Résolution du maillage
+                              </div>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Boutons d'export */}
+                    <Card className="bg-zinc-900/50 border-zinc-800">
+                      <CardHeader>
+                        <CardTitle>Export des résultats</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="outline"
+                            onClick={() => handleExport('png')}
+                            disabled={isExporting || !results.vtk_file_url}
+                            className="flex items-center gap-2"
+                          >
+                            {isExporting ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                            Image PNG
+                          </Button>
+                          <Button
+                            variant="outline"
+                            onClick={() => handleExport('csv')}
+                            disabled={isExporting || !results.temperature_data_url}
+                            className="flex items-center gap-2"
+                          >
+                            {isExporting ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                            Données CSV
+                          </Button>
+                          <Button
+                            variant="outline"
+                            onClick={() => handleExport('vtk')}
+                            disabled={isExporting || !results.vtk_file_url}
+                            className="flex items-center gap-2"
+                          >
+                            {isExporting ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                            Fichier VTK
+                          </Button>
+                        </div>
+                        <div className="text-xs text-zinc-500 mt-2">
+                          Téléchargez les résultats sous différents formats pour analyse
+                        </div>
+                      </CardContent>
+                    </Card>
                   </div>
                 ) : (
                   <Card className="bg-zinc-900/50 border-zinc-800">
                     <CardContent className="py-12 text-center">
-                      <AlertCircle className="w-12 h-12 mx-auto text-zinc-600 mb-4" />
+                      <Thermometer className="w-16 h-16 mx-auto text-zinc-600 mb-4" />
                       <div className="text-lg font-semibold mb-2">Aucun résultat disponible</div>
-                      <div className="text-sm text-zinc-400">
+                      <div className="text-sm text-zinc-400 mb-6 max-w-md mx-auto">
                         Les résultats de simulation seront affichés ici après exécution.
+                        Lancez d'abord la simulation pour calculer les températures.
                       </div>
+                      {id && (
+                        <Button
+                          onClick={() => startSimulation()}
+                          disabled={isRunning}
+                          className="bg-blue-600 hover:bg-blue-700"
+                        >
+                          <Play className="w-4 h-4 mr-2" />
+                          Lancer la simulation
+                        </Button>
+                      )}
                     </CardContent>
                   </Card>
                 )}
@@ -895,15 +1200,17 @@ export default function SimulationEditor() {
                 <Card className="bg-zinc-900/50 border-zinc-800">
                   <CardContent className="pt-6">
                     {simulation ? (
-                      <div className="space-y-4">
+                      <div className="space-y-6">
                         <div className="grid grid-cols-2 gap-4">
                           <div>
-                            <div className="text-sm text-zinc-400">ID</div>
-                            <div className="font-mono text-sm">{simulation.id}</div>
+                            <div className="text-sm text-zinc-400">ID Simulation</div>
+                            <div className="font-mono text-sm bg-zinc-800/50 p-2 rounded mt-1">
+                              {simulation.id}
+                            </div>
                           </div>
                           <div>
                             <div className="text-sm text-zinc-400">Statut</div>
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 mt-1">
                               <SimulationStatus status={simulation.status} />
                               <span className="text-sm">
                                 {simulation.status === 'running' && progress !== undefined
@@ -914,26 +1221,60 @@ export default function SimulationEditor() {
                           </div>
                           <div>
                             <div className="text-sm text-zinc-400">Créée le</div>
-                            <div>{new Date(simulation.created_at).toLocaleString()}</div>
+                            <div className="mt-1">
+                              {new Date(simulation.created_at).toLocaleDateString('fr-FR', {
+                                day: 'numeric',
+                                month: 'long',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </div>
                           </div>
                           <div>
                             <div className="text-sm text-zinc-400">Modifiée le</div>
-                            <div>{new Date(simulation.updated_at).toLocaleString()}</div>
+                            <div className="mt-1">
+                              {new Date(simulation.updated_at).toLocaleDateString('fr-FR', {
+                                day: 'numeric',
+                                month: 'long',
+                                year: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </div>
                           </div>
                         </div>
                         
                         <Separator />
                         
                         <div>
-                          <div className="text-sm text-zinc-400 mb-2">Configuration</div>
-                          <pre className="bg-zinc-900 p-4 rounded-lg text-sm overflow-auto max-h-60">
-                            {JSON.stringify(simulation, null, 2)}
-                          </pre>
+                          <div className="text-sm text-zinc-400 mb-2">Configuration complète</div>
+                          <div className="bg-zinc-900 p-4 rounded-lg text-sm overflow-auto max-h-[300px]">
+                            <pre className="whitespace-pre-wrap break-words">
+                              {JSON.stringify(simulation, null, 2)}
+                            </pre>
+                          </div>
                         </div>
+                        
+                        {simulation.error_message && (
+                          <>
+                            <Separator />
+                            <div>
+                              <div className="text-sm text-red-400 mb-2">Détails de l'erreur</div>
+                              <div className="bg-red-900/20 p-3 rounded border border-red-800/50">
+                                <div className="font-mono text-sm">{simulation.error_message}</div>
+                              </div>
+                            </div>
+                          </>
+                        )}
                       </div>
                     ) : (
                       <div className="text-center py-12 text-zinc-500">
-                        Chargez une simulation pour voir les détails
+                        <Settings className="w-16 h-16 mx-auto mb-4" />
+                        <div className="text-lg font-semibold mb-2">Aucune simulation chargée</div>
+                        <div className="text-sm text-zinc-400">
+                          Créez ou sélectionnez une simulation pour voir ses détails
+                        </div>
                       </div>
                     )}
                   </CardContent>
