@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
 import { 
@@ -27,7 +27,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
-import { VTKViewer } from '@/components/Viewers/VTKViewer';
+import VTKViewer from '@/components/Viewers/VTKViewer';
 import type { 
   IndustrialField, 
   IndustrialConfig,
@@ -290,8 +290,6 @@ export default function SimulationEditor() {
       
       switch (format) {
         case 'png':
-          // Pour PNG, on pourrait utiliser une capture d'écran du canvas
-          // Pour l'instant, on utilise l'URL existante
           url = results.vtk_file_url || '';
           filename += '.png';
           break;
@@ -336,7 +334,6 @@ export default function SimulationEditor() {
   }) => {
     setSelectedPoint(data);
     
-    // Notification pour l'utilisateur
     const temp = data.field_values.temperature;
     if (temp !== undefined) {
       toast.info(`Température sélectionnée: ${temp.toFixed(1)}°C`, {
