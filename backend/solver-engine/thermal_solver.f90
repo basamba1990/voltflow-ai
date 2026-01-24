@@ -1,8 +1,8 @@
 module thermal_solver
-    use, intrinsic :: iso_fortran_env, only: dp => real64
     implicit none
+    integer, parameter :: dp = kind(1.0d0)
     private
-    public :: solve_heat_transfer, initialize_solver, cleanup_solver
+    public :: solve_heat_transfer, initialize_solver, cleanup_solver, export_to_vtk
     
     type, public :: SimulationConfig
         real(dp) :: conductivity
@@ -29,7 +29,7 @@ module thermal_solver
         real(dp) :: final_residual
     end type SimulationResult
     
-    real(dp), parameter :: PI = 3.141592653589793_dp
+    real(dp), parameter :: PI = 3.41592653589793_dp
     
 contains
     
@@ -70,16 +70,16 @@ contains
         
         ! Coefficients physiques
         alpha = config%conductivity / (config%density * config%specific_heat)
-        dt = 0.01_dp  ! Pas de temps adaptatif
+        dt = 0.1_dp  ! Pas de temps adaptatif
         
         ! Construction matrice de rigidité (éléments finis linéaires)
-        A = 0.0_dp
+        A = 0._dp
         do i = 1, n-1
-            A(i,i) = 1.0_dp + 2.0_dp * alpha * dt
+            A(i,i) = 1._dp + 2._dp * alpha * dt
             A(i,i+1) = -alpha * dt
             A(i+1,i) = -alpha * dt
         end do
-        A(n,n) = 1.0_dp + 2.0_dp * alpha * dt
+        A(n,n) = 1._dp + 2._dp * alpha * dt
         
         ! Application des conditions aux limites
         b = config%initial_temp
@@ -94,14 +94,14 @@ contains
         ! Initialisation de la solution
         x = config%initial_temp
         result%iterations = 0
-        norm_factor = 1.0_dp / real(n, dp)
+        norm_factor = 1._dp / real(n, dp)
         
         call progress_callback(0.3, "Résolution de l'équation de la chaleur")
         
         ! Solveur Gauss-Seidel avec critère d'arrêt adaptatif
         do iter = 1, config%max_iterations
             x_old = x
-            residual = 0.0_dp
+            residual = 0._dp
             
             ! Itération Gauss-Seidel
             do i = 1, n
@@ -135,7 +135,7 @@ contains
         result%min_temp = minval(x)
         result%avg_temp = sum(x) / real(n, dp)
         result%heat_gradient = (result%max_temp - result%min_temp) / real(n, dp)
-        result%convergence_rate = exp(-real(iter, dp) / 1000.0_dp)
+        result%convergence_rate = exp(-real(iter, dp) / 1000._dp)
         result%final_residual = residual
         result%uncertainty_score = calculate_uncertainty(x, config)
         
@@ -163,25 +163,25 @@ contains
         mean = sum(temperature) / real(n, dp)
         
         ! Calcul de la variance
-        variance = 0.0_dp
+        variance = 0._dp
         do i = 1, n
             variance = variance + (temperature(i) - mean)**2
         end do
         variance = variance / real(n-1, dp)
         
         ! Calcul du skewness (asymétrie)
-        skewness = 0.0_dp
+        skewness = 0._dp
         do i = 1, n
             skewness = skewness + ((temperature(i) - mean)**3) / (variance**1.5)
         end do
         skewness = skewness / real(n, dp)
         
         ! Score d'incertitude composite
-        uncertainty = 0.4_dp * (variance / (mean + 1.0e-10_dp)) + &
-                     0.3_dp * abs(skewness) + &
-                     0.3_dp * (config%heat_flux / 1000.0_dp)
+        uncertainty = 0._dp * (variance / (mean + 1.e-0_dp)) + &
+                     0._dp * abs(skewness) + &
+                     0._dp * (config%heat_flux / 1000._dp)
         
-        uncertainty = min(1.0_dp, max(0.0_dp, uncertainty))
+        uncertainty = min(1._dp, max(0._dp, uncertainty))
         
     end function calculate_uncertainty
     
@@ -222,21 +222,22 @@ end module thermal_solver
 program test_thermal_solver
     use thermal_solver
     implicit none
+    integer, parameter :: dp = kind(1.0d0)
     
     type(SimulationConfig) :: config
     type(SimulationResult) :: result
     integer :: i
     
     ! Configuration de test
-    config%conductivity = 200.0_dp
-    config%density = 2700.0_dp
-    config%specific_heat = 900.0_dp
-    config%initial_temp = 25.0_dp
-    config%boundary_temp = 100.0_dp
-    config%heat_flux = 500.0_dp
+    config%conductivity = 200._dp
+    config%density = 2700._dp
+    config%specific_heat = 900._dp
+    config%initial_temp = 25._dp
+    config%boundary_temp = 100._dp
+    config%heat_flux = 500._dp
     config%mesh_elements = 1000
     config%max_iterations = 15000
-    config%tolerance = 1.0e-6_dp
+    config%tolerance = 1.e-_dp
     config%mesh_file = "mesh.vtk"
     
     call initialize_solver()
