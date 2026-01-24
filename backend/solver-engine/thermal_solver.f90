@@ -29,12 +29,11 @@ module thermal_solver
         real(dp) :: final_residual
     end type SimulationResult
     
-    real(dp), parameter :: PI = 3.41592653589793_dp
+    real(dp), parameter :: PI = 3.141592653589793_dp
     
 contains
     
     subroutine initialize_solver()
-        ! Initialisation des tables de propriétés matérielles
         print *, "Thermal Solver initialisé avec précision double"
     end subroutine initialize_solver
 
@@ -65,14 +64,11 @@ contains
         n = config%mesh_elements
         allocate(A(n,n), b(n), x(n), x_old(n))
         
-        ! Appel du callback de progression
         call progress_callback(0.1, "Initialisation des matrices FEM")
         
-        ! Coefficients physiques
         alpha = config%conductivity / (config%density * config%specific_heat)
-        dt = 0.1_dp  ! Pas de temps adaptatif
+        dt = 0.1_dp
         
-        ! Construction matrice de rigidité (éléments finis linéaires)
         A = 0._dp
         do i = 1, n-1
             A(i,i) = 1._dp + 2._dp * alpha * dt
@@ -81,29 +77,24 @@ contains
         end do
         A(n,n) = 1._dp + 2._dp * alpha * dt
         
-        ! Application des conditions aux limites
         b = config%initial_temp
-        b(1) = config%boundary_temp  ! Condition Dirichlet à gauche
-        b(n) = config%boundary_temp  ! Condition Dirichlet à droite
+        b(1) = config%boundary_temp
+        b(n) = config%boundary_temp
         
-        ! Source de chaleur distribuée (sinusoïdale pour exemple)
         do i = 1, n
             b(i) = b(i) + config%heat_flux * sin(PI * real(i-1, dp) / real(n-1, dp))
         end do
         
-        ! Initialisation de la solution
         x = config%initial_temp
         result%iterations = 0
         norm_factor = 1._dp / real(n, dp)
         
         call progress_callback(0.3, "Résolution de l'équation de la chaleur")
         
-        ! Solveur Gauss-Seidel avec critère d'arrêt adaptatif
         do iter = 1, config%max_iterations
             x_old = x
             residual = 0._dp
             
-            ! Itération Gauss-Seidel
             do i = 1, n
                 x(i) = b(i)
                 do j = 1, n
@@ -118,17 +109,14 @@ contains
             residual = residual * norm_factor
             result%iterations = iter
             
-            ! Mise à jour de la progression
             if (mod(iter, 100) == 0) then
                 call progress_callback(0.3 + 0.6 * (real(iter) / real(config%max_iterations)), &
                                       "Calcul en cours...")
             end if
             
-            ! Critère de convergence
             if (residual < config%tolerance) exit
         end do
         
-        ! Stockage des résultats
         allocate(result%temperature_field(n))
         result%temperature_field = x
         result%max_temp = maxval(x)
@@ -139,7 +127,6 @@ contains
         result%final_residual = residual
         result%uncertainty_score = calculate_uncertainty(x, config)
         
-        ! Nettoyage de la mémoire
         deallocate(A, b, x, x_old)
         
         call cpu_time(end_time)
@@ -162,30 +149,26 @@ contains
         n = size(temperature)
         mean = sum(temperature) / real(n, dp)
         
-        ! Calcul de la variance
         variance = 0._dp
         do i = 1, n
             variance = variance + (temperature(i) - mean)**2
         end do
         variance = variance / real(n-1, dp)
         
-        ! Calcul du skewness (asymétrie)
         skewness = 0._dp
         do i = 1, n
             skewness = skewness + ((temperature(i) - mean)**3) / (variance**1.5)
         end do
         skewness = skewness / real(n, dp)
         
-        ! Score d'incertitude composite
-        uncertainty = 0._dp * (variance / (mean + 1.e-0_dp)) + &
-                     0._dp * abs(skewness) + &
-                     0._dp * (config%heat_flux / 1000._dp)
+        uncertainty = 0.7_dp * (variance / (mean + 1.0e-6_dp)) + &
+                     0.2_dp * abs(skewness) + &
+                     0.1_dp * (config%heat_flux / 1000._dp)
         
         uncertainty = min(1._dp, max(0._dp, uncertainty))
         
     end function calculate_uncertainty
     
-    ! Fonctions auxiliaires
     subroutine export_to_vtk(temperature, filename)
         real(dp), intent(in) :: temperature(:)
         character(len=*), intent(in) :: filename
@@ -218,7 +201,6 @@ contains
     
 end module thermal_solver
 
-! Programme principal de test
 program test_thermal_solver
     use thermal_solver
     implicit none
@@ -228,7 +210,6 @@ program test_thermal_solver
     type(SimulationResult) :: result
     integer :: i
     
-    ! Configuration de test
     config%conductivity = 200._dp
     config%density = 2700._dp
     config%specific_heat = 900._dp
@@ -237,7 +218,7 @@ program test_thermal_solver
     config%heat_flux = 500._dp
     config%mesh_elements = 1000
     config%max_iterations = 15000
-    config%tolerance = 1.e-_dp
+    config%tolerance = 1.0e-6_dp
     config%mesh_file = "mesh.vtk"
     
     call initialize_solver()
@@ -247,7 +228,6 @@ program test_thermal_solver
     print *, "Température min:", result%min_temp
     print *, "Score d'incertitude:", result%uncertainty_score
     
-    ! Export des résultats
     call export_to_vtk(result%temperature_field, "temperature_field.vtk")
     
     call cleanup_solver(result)
