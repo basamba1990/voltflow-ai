@@ -9,6 +9,10 @@ import logging
 from datetime import datetime
 
 # Import des modules locaux
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'agents'))
+
 from pinn_surrogate import PINNSurrogate
 from artemis_optimizer import ArtemisOptimizer, MutationType
 from uncertainty_quantifier import UncertaintyQuantifier
