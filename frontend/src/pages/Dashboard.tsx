@@ -1,5 +1,3 @@
-// FICHIER CORRIGÉ : frontend/src/pages/Dashboard.tsx
-
 import { Button } from "@/components/ui/button";
 import {
   LineChart,
@@ -37,6 +35,27 @@ import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 
+// Types locaux
+type ChartDataPoint = {
+  month: string;
+  simulations: number;
+  avgTime: number;
+};
+
+type TemperatureDataPoint = {
+  name: string;
+  value: number;
+  fill: string;
+};
+
+type StatItem = {
+  label: string;
+  value: string;
+  icon: React.ComponentType<{ className?: string }>;
+  trend: string;
+  limit?: number;
+};
+
 /**
  * VoltFlow AI - Dashboard
  * Design: Neon-Noir avec statistiques en temps réel
@@ -50,7 +69,7 @@ export default function Dashboard() {
   const [refreshing, setRefreshing] = useState(false);
   const realtimeChannelsRef = useRef<any[]>([]);
 
-  const chartData = [
+  const chartData: ChartDataPoint[] = [
     { month: "Jan", simulations: 12, avgTime: 2.5 },
     { month: "Fév", simulations: 19, avgTime: 2.1 },
     { month: "Mar", simulations: 15, avgTime: 1.8 },
@@ -59,13 +78,13 @@ export default function Dashboard() {
     { month: "Juin", simulations: 35, avgTime: 0.9 },
   ];
 
-  const temperatureData = [
+  const temperatureData: TemperatureDataPoint[] = [
     { name: "Startup", value: 25, fill: "oklch(0.65 0.25 330)" },
     { name: "Optimisé", value: 45, fill: "oklch(0.55 0.28 260)" },
     { name: "Avancé", value: 30, fill: "oklch(0.75 0.15 200)" },
   ];
 
-  const stats = [
+  const stats: StatItem[] = [
     {
       label: "Simulations ce mois",
       value: profile?.simulations_used?.toString() || "0",
@@ -109,34 +128,42 @@ export default function Dashboard() {
       const data = await getSimulations({ limit: 5 });
       setSimulations(data);
 
-      // Subscribe to real-time updates for running simulations
+      // Clean up old channels
+      realtimeChannelsRef.current.forEach(channel => {
+        if (channel) {
+          unsubscribeFromChannel(channel);
+        }
+      });
+      
+      // Create new channels for running simulations
       const runningSims = data.filter(
         (sim: Simulation) => sim.status === 'running' || sim.status === 'pending'
       );
       
-      // Clean up old channels
-      realtimeChannelsRef.current.forEach(channel => unsubscribeFromChannel(channel));
-      
-      // Create new channels
       const channels = runningSims.map((sim: Simulation) => {
-        return subscribeToSimulation(sim.id, (payload) => {
-          setSimulations(prev => 
-            prev.map(s => s.id === payload.new.id ? { ...s, ...payload.new } : s)
-          );
-        });
-      });
+        try {
+          return subscribeToSimulation(sim.id, (payload) => {
+            setSimulations(prev => 
+              prev.map(s => s.id === payload.new.id ? { ...s, ...payload.new } : s)
+            );
+          });
+        } catch (err) {
+          console.error('❌ Erreur subscription pour simulation:', sim.id, err);
+          return null;
+        }
+      }).filter(Boolean);
       
       realtimeChannelsRef.current = channels;
     } catch (error: any) {
       console.error('❌ Erreur loadSimulations:', error);
-      setError(error.message);
+      setError(error.message || 'Erreur inconnue lors du chargement');
       
-      if (error.message.includes('NetworkError') || error.message.includes('fetch')) {
+      if (error.message?.includes('NetworkError') || error.message?.includes('fetch')) {
         toast.error('Problème de connexion. Vérifiez votre réseau.');
-      } else if (error.message.includes('JWT') || error.message.includes('401')) {
+      } else if (error.message?.includes('JWT') || error.message?.includes('401')) {
         toast.error('Session expirée. Redirection...');
         setTimeout(() => signOut(), 2000);
-      } else if (error.message.includes('PGRST116') || error.message.includes('42P01')) {
+      } else if (error.message?.includes('PGRST116') || error.message?.includes('42P01')) {
         toast.error('Table de simulations non disponible. Contactez le support.');
       } else {
         toast.error('Erreur lors du chargement des simulations');
@@ -167,18 +194,32 @@ export default function Dashboard() {
     
     init();
     
+    // Cleanup function
     return () => {
-      // Cleanup realtime subscriptions
-      realtimeChannelsRef.current.forEach(channel => unsubscribeFromChannel(channel));
+      realtimeChannelsRef.current.forEach(channel => {
+        if (channel) {
+          unsubscribeFromChannel(channel);
+        }
+      });
+      realtimeChannelsRef.current = [];
     };
   }, [loadSimulations]);
 
   const handleSignOut = async () => {
     try {
+      // Cleanup subscriptions before logout
+      realtimeChannelsRef.current.forEach(channel => {
+        if (channel) {
+          unsubscribeFromChannel(channel);
+        }
+      });
+      realtimeChannelsRef.current = [];
+      
       await signOut();
       toast.success('Déconnexion réussie');
       setLocation('/');
-    } catch (error) {
+    } catch (error: any) {
+      console.error('❌ Erreur signOut:', error);
       toast.error('Erreur lors de la déconnexion');
     }
   };
@@ -189,6 +230,16 @@ export default function Dashboard() {
       setLocation('/login');
       return;
     }
+    
+    // Vérifier la limite de simulations
+    const used = profile?.simulations_used || 0;
+    const limit = profile?.simulations_limit || 10;
+    
+    if (used >= limit) {
+      toast.error(`Limite de ${limit} simulations atteinte ce mois-ci.`);
+      return;
+    }
+    
     setLocation('/simulation/new');
   };
 
@@ -270,6 +321,40 @@ export default function Dashboard() {
     );
   }
 
+  // Helper pour le statut de simulation
+  const getStatusText = (status: string): string => {
+    switch (status) {
+      case 'completed': return 'Terminée';
+      case 'running': return 'En cours';
+      case 'failed': return 'Échouée';
+      case 'pending': return 'En attente';
+      case 'cancelled': return 'Annulée';
+      default: return status;
+    }
+  };
+
+  const getStatusColor = (status: string): string => {
+    switch (status) {
+      case 'completed': return 'bg-green-500/10 text-green-500';
+      case 'running': return 'bg-blue-500/10 text-blue-500';
+      case 'failed': return 'bg-red-500/10 text-red-500';
+      case 'pending': return 'bg-yellow-500/10 text-yellow-500';
+      case 'cancelled': return 'bg-gray-500/10 text-gray-500';
+      default: return 'bg-gray-500/10 text-gray-500';
+    }
+  };
+
+  const getProgressColor = (status: string): string => {
+    switch (status) {
+      case 'completed': return 'bg-primary';
+      case 'running': return 'bg-blue-500';
+      case 'failed': return 'bg-red-500';
+      case 'pending': return 'bg-yellow-500';
+      case 'cancelled': return 'bg-gray-500';
+      default: return 'bg-secondary';
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <header className="border-b border-border">
@@ -290,12 +375,17 @@ export default function Dashboard() {
             <Button
               onClick={handleNewSimulation}
               className="bg-primary hover:bg-primary/90 text-primary-foreground gap-2"
-              disabled={loading}
+              disabled={loading || refreshing}
             >
               <Plus className="w-4 h-4" />
               Nouvelle Simulation
             </Button>
-            <Button variant="ghost" size="icon" disabled={loading}>
+            <Button 
+              variant="ghost" 
+              size="icon" 
+              onClick={() => setLocation('/settings')}
+              disabled={loading}
+            >
               <Settings className="w-5 h-5" />
             </Button>
             <Button
@@ -374,13 +464,19 @@ export default function Dashboard() {
                   strokeDasharray="3 3"
                   stroke="oklch(0.25 0.08 260 / 0.3)"
                 />
-                <XAxis dataKey="month" stroke="oklch(0.75 0.05 60)" />
-                <YAxis stroke="oklch(0.75 0.05 60)" />
+                <XAxis 
+                  dataKey="month" 
+                  stroke="oklch(0.75 0.05 60)" 
+                />
+                <YAxis 
+                  stroke="oklch(0.75 0.05 60)" 
+                />
                 <Tooltip
                   contentStyle={{
                     backgroundColor: 'oklch(0.18 0.04 260)',
                     border: '1px solid oklch(0.25 0.08 260 / 0.3)',
                     borderRadius: '8px',
+                    color: 'oklch(0.95 0.02 260)',
                   }}
                 />
                 <Legend />
@@ -429,6 +525,7 @@ export default function Dashboard() {
                     backgroundColor: 'oklch(0.18 0.04 260)',
                     border: '1px solid oklch(0.25 0.08 260 / 0.3)',
                     borderRadius: '8px',
+                    color: 'oklch(0.95 0.02 260)',
                   }}
                 />
               </PieChart>
@@ -450,11 +547,10 @@ export default function Dashboard() {
                 size="sm"
                 onClick={handleRefresh}
                 disabled={refreshing || loading}
+                aria-label="Actualiser"
               >
                 <RefreshCw
-                  className={`w-4 h-4 ${
-                    refreshing ? 'animate-spin' : ''
-                  }`}
+                  className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`}
                 />
               </Button>
             </div>
@@ -468,78 +564,60 @@ export default function Dashboard() {
             ) : simulations.length === 0 ? (
               <EmptyState />
             ) : (
-              simulations.map((sim) => (
-                <div
-                  key={sim.id}
-                  className="p-4 rounded-lg bg-background border border-border hover:border-primary/50 transition-all duration-300 flex items-center justify-between cursor-pointer group"
-                  onClick={() => setLocation(`/simulation/${sim.id}`)}
-                >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <h4 className="font-semibold group-hover:text-primary transition-all duration-300">
-                        {sim.name}
-                      </h4>
-                      <span
-                        className={`text-xs px-2 py-1 rounded-full capitalize ${
-                          sim.status === 'completed'
-                            ? 'bg-green-500/10 text-green-500'
-                            : sim.status === 'running'
-                            ? 'bg-blue-500/10 text-blue-500'
-                            : sim.status === 'failed'
-                            ? 'bg-red-500/10 text-red-500'
-                            : 'bg-yellow-500/10 text-yellow-500'
-                        }`}
-                      >
-                        {sim.status === 'completed'
-                          ? 'Terminée'
-                          : sim.status === 'running'
-                          ? 'En cours'
-                          : sim.status === 'failed'
-                          ? 'Échouée'
-                          : 'En attente'}
-                      </span>
+              simulations.map((sim) => {
+                const duration = sim.estimated_duration 
+                  ? `${Math.round((sim.estimated_duration || 0) / 60)}min` 
+                  : 'En cours';
+                
+                return (
+                  <div
+                    key={sim.id}
+                    className="p-4 rounded-lg bg-background border border-border hover:border-primary/50 transition-all duration-300 flex items-center justify-between cursor-pointer group"
+                    onClick={() => setLocation(`/simulation/${sim.id}`)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        setLocation(`/simulation/${sim.id}`);
+                      }
+                    }}
+                  >
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 mb-2">
+                        <h4 className="font-semibold group-hover:text-primary transition-all duration-300">
+                          {sim.name}
+                        </h4>
+                        <span
+                          className={`text-xs px-2 py-1 rounded-full capitalize ${getStatusColor(sim.status)}`}
+                        >
+                          {getStatusText(sim.status)}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        <span>
+                          {new Date(sim.created_at).toLocaleDateString('fr-FR')}
+                        </span>
+                        <span>Durée: {duration}</span>
+                        <span>Progression: {sim.progress || 0}%</span>
+                      </div>
+                      <div className="mt-3 w-full bg-background rounded-full h-2 overflow-hidden">
+                        <div
+                          className={`h-full transition-all duration-500 ${getProgressColor(sim.status)}`}
+                          style={{ width: `${sim.progress || 0}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                      <span>
-                        {new Date(sim.created_at).toLocaleDateString('fr-FR')}
+                    <div className="ml-4 text-right">
+                      <div className="text-2xl font-bold text-primary">
+                        {sim.progress || 0}%
+                      </div>
+                      <span className="text-xs text-muted-foreground capitalize">
+                        {getStatusText(sim.status)}
                       </span>
-                      <span>
-                        Durée:{' '}
-                        {sim.duration
-                          ? `${Math.round(sim.duration / 60)}min`
-                          : 'En cours'}
-                      </span>
-                      <span>Progression: {sim.progress}%</span>
-                    </div>
-                    <div className="mt-3 w-full bg-background rounded-full h-2 overflow-hidden">
-                      <div
-                        className={`h-full transition-all duration-500 ${
-                          sim.status === 'completed'
-                            ? 'bg-primary'
-                            : sim.status === 'running'
-                            ? 'bg-blue-500'
-                            : 'bg-secondary'
-                        }`}
-                        style={{ width: `${sim.progress}%` }}
-                      />
                     </div>
                   </div>
-                  <div className="ml-4 text-right">
-                    <div className="text-2xl font-bold text-primary">
-                      {sim.progress}%
-                    </div>
-                    <span className="text-xs text-muted-foreground capitalize">
-                      {sim.status === 'completed'
-                        ? 'Terminée'
-                        : sim.status === 'running'
-                        ? 'En cours'
-                        : sim.status === 'failed'
-                        ? 'Échouée'
-                        : 'En attente'}
-                    </span>
-                  </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
