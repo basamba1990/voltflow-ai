@@ -16,3 +16,124 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO public.users (id, email, full_name, role, subscription_plan, simulations_limit) VALUES
   ('11111111-1111-1111-1111-111111111111', 'test@voltflow.ai', 'Test Engineer', 'engineer', 'professional', 100)
 ON CONFLICT (id) DO NOTHING;
+
+
+-- backend/supabase/seed.sql
+-- CORRECTIONS COMPLÈTES POUR UPLOAD DE GÉOMÉTRIES VOLTFLOW AI
+
+-- 1. SUPPRESSION DES POLITIQUES EXISTANTES POUR ÉVITER LES CONFLITS
+DROP POLICY IF EXISTS "Allow authenticated upload" ON storage.objects;
+DROP POLICY IF EXISTS "Users can upload geometry files" ON storage.objects;
+DROP POLICY IF EXISTS "Users can view own geometry files" ON storage.objects;
+DROP POLICY IF EXISTS "Users can update own files" ON storage.objects;
+DROP POLICY IF EXISTS "Users can delete own files" ON storage.objects;
+
+-- 2. MISE À JOUR DU BUCKET 'geometries' POUR INCLURE TOUS LES MIME TYPES REQUIS
+UPDATE storage.buckets 
+SET allowed_mime_types = ARRAY[
+  -- Formats existants
+  'application/octet-stream',  -- Format générique pour fichiers binaires
+  'application/sla',           -- STL ASCII
+  'model/stl',                 -- STL binaire
+  'application/step',          -- STEP
+  'application/stp',           -- STP
+  'application/iges',          -- IGES
+  'application/igs',           -- IGS
+  'model/obj',                 -- OBJ
+  'application/ply',           -- PLY
+  'application/vtk',           -- VTK
+  'application/vnd.kitware.vtp', -- VTP
+  'application/vnd.kitware.vti', -- VTI
+  'text/plain',                -- Fichiers texte
+  'application/json'           -- Fichiers JSON
+]
+WHERE id = 'geometries';
+
+-- 3. POLITIQUE D'UPLOAD CORRIGÉE ET SÉCURISÉE
+-- Vérifie: bucket_id, utilisateur authentifié, chemin du fichier correspond à l'UID, extensions autorisées
+CREATE POLICY "Users can upload geometry files"
+  ON storage.objects FOR INSERT
+  WITH CHECK (
+    bucket_id = 'geometries'
+    AND auth.role() = 'authenticated'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+    AND (
+      -- Extensions à 3 caractères
+      LOWER(RIGHT(name, 4)) IN ('.stl', '.obj', '.igs', '.vtp', '.vti', '.ply', '.vtk')
+      -- Extensions à 4 caractères
+      OR LOWER(RIGHT(name, 5)) IN ('.step', '.stp', '.iges')
+    )
+  );
+
+-- 4. POLITIQUE DE LECTURE (pour l'Edge Function et l'utilisateur)
+CREATE POLICY "Users can view own geometry files"
+  ON storage.objects FOR SELECT
+  USING (
+    bucket_id = 'geometries'
+    AND (
+      -- L'utilisateur peut voir ses propres fichiers
+      auth.uid()::text = (storage.foldername(name))[1]
+      -- OU l'Edge Function (service_role) peut voir tous les fichiers
+      OR auth.role() = 'service_role'
+    )
+  );
+
+-- 5. POLITIQUE DE MISE À JOUR (si nécessaire)
+CREATE POLICY "Users can update own geometry files"
+  ON storage.objects FOR UPDATE
+  USING (
+    bucket_id = 'geometries'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+-- 6. POLITIQUE DE SUPPRESSION (pour le nettoyage)
+CREATE POLICY "Users can delete own geometry files"
+  ON storage.objects FOR DELETE
+  USING (
+    bucket_id = 'geometries'
+    AND auth.uid()::text = (storage.foldername(name))[1]
+  );
+
+-- 7. ACTIVER RLS SUR LA TABLE storage.objects (s'assurer qu'il est activé)
+ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
+
+-- 8. VÉRIFICATION DES AUTORISATIONS POUR LE BUCKET
+UPDATE storage.buckets 
+SET public = false,
+    file_size_limit = 52428800, -- 50MB
+    allowed_mime_types = allowed_mime_types
+WHERE id = 'geometries';
+
+-- 9. CRÉATION D'INDEX POUR PERFORMANCE
+CREATE INDEX IF NOT EXISTS idx_storage_objects_bucket_id_name 
+ON storage.objects(bucket_id, name);
+
+CREATE INDEX IF NOT EXISTS idx_storage_objects_bucket_id_folder 
+ON storage.objects(bucket_id, (storage.foldername(name)));
+
+-- 10. FONCTION UTILITAIRE POUR VÉRIFIER LES PERMISSIONS
+CREATE OR REPLACE FUNCTION check_upload_permissions(user_id uuid, file_path text)
+RETURNS boolean AS $$
+DECLARE
+  folder_name text;
+BEGIN
+  -- Extraire le premier élément du chemin (user ID)
+  folder_name := (SELECT (storage.foldername(file_path))[1]);
+  
+  -- Vérifier que le dossier correspond à l'user_id
+  IF folder_name = user_id::text THEN
+    RETURN true;
+  ELSE
+    RETURN false;
+  END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Message de confirmation
+DO $$
+BEGIN
+  RAISE NOTICE '✅ Politiques RLS corrigées avec succès pour le bucket "geometries"';
+  RAISE NOTICE '✅ Formats supportés: STL, STEP, STP, OBJ, IGES, IGS, VTP, VTI, PLY, VTK';
+  RAISE NOTICE '✅ Structure de dossiers: user_id/timestamp_filename.ext';
+  RAISE NOTICE '✅ Taille maximale: 50MB';
+END $$;
