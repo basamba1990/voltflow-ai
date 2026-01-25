@@ -19,6 +19,7 @@ export interface UploadGeometryResponse {
   fileName: string;
   fileSize?: number;
   path?: string;
+  error?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -182,7 +183,12 @@ export const uploadGeometry = async (
       userMessage = 'Format de fichier non supporté. Utilisez STL, STEP, VTP, etc.';
     }
     
-    throw new Error(userMessage);
+    return {
+      success: false,
+      fileUrl: '',
+      fileName: params.file.name,
+      error: userMessage
+    };
   }
 };
 
@@ -389,7 +395,53 @@ export const deleteSimulation = async (simulationId: string): Promise<void> => {
   }
 };
 
-// Export du service
+// -----------------------------------------------------------------------------
+// FONCTIONS DE SOUSCRIPTION EN TEMPS RÉEL
+// -----------------------------------------------------------------------------
+
+export const subscribeToSimulation = (
+  simulationId: string,
+  callback: (payload: any) => void
+) => {
+  try {
+    const channel = supabase
+      .channel(`simulation:${simulationId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'simulations',
+          filter: `id=eq.${simulationId}`
+        },
+        callback
+      )
+      .subscribe((status) => {
+        console.log(`📡 Subscription ${simulationId}:`, status);
+      });
+
+    return channel;
+  } catch (error) {
+    console.error('❌ subscribeToSimulation error:', error);
+    return null;
+  }
+};
+
+export const unsubscribeFromChannel = (channel: any) => {
+  try {
+    if (channel) {
+      supabase.removeChannel(channel);
+      console.log('📡 Channel unsubscribed');
+    }
+  } catch (error) {
+    console.error('❌ unsubscribeFromChannel error:', error);
+  }
+};
+
+// -----------------------------------------------------------------------------
+// EXPORT COMPLET
+// -----------------------------------------------------------------------------
+
 export const SimulationService = {
   getSimulations,
   getSimulationById,
@@ -397,7 +449,9 @@ export const SimulationService = {
   updateSimulation,
   startSimulation,
   uploadGeometry,
-  deleteSimulation
+  deleteSimulation,
+  subscribeToSimulation,
+  unsubscribeFromChannel
 };
 
 export default SimulationService;
