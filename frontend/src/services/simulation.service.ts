@@ -311,7 +311,6 @@ export const uploadGeometryViaEdgeFunction = async (
   console.log('🚀 Upload via Edge Function:', params.file.name);
   
   try {
-    // Validation du fichier
     validateFile(params.file);
     
     // Récupération du token d'authentification
@@ -546,7 +545,7 @@ export const SimulationService = {
   createSimulation,
   updateSimulation,
   startSimulation,
-  uploadGeometry: uploadGeometryViaEdgeFunction, // Utilise l'Edge Function par défaut
+  uploadGeometry: uploadGeometryDirect, // Utilise l'upload direct par défaut (corrigé)
   uploadGeometryDirect,
   uploadGeometryViaEdgeFunction,
   deleteSimulation,
