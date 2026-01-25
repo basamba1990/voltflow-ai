@@ -5,7 +5,7 @@ import {
   Save, Play, Download, Trash2, Thermometer, Loader2, 
   AlertCircle, ChevronLeft, UploadCloud, Box, Settings,
   Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy,
-  FileUp, CheckCircle, XCircle
+  FileUp, CheckCircle, XCircle, TestTube
 } from 'lucide-react';
 
 // Services et hooks
@@ -105,7 +105,7 @@ export default function SimulationEditor() {
           dimensions: { width: 100, height: 100, depth: 100 }
         },
         materialId: simulation.material_id || '',
-        meshDensity: simulation.mesh_density_level || 'medium',
+        meshDensity: simulation.mesh_density || 'medium',
         initialTemp: bc?.initial_temp?.toString() || '200',
         ambientTemp: bc?.ambient_temp?.toString() || '25',
         coolingType: bc?.cooling_type || 'natural_convection',
@@ -212,7 +212,7 @@ export default function SimulationEditor() {
     }
 
     // Validation de la taille (max 50MB)
-    const maxSize = 50 * 1024 * 1024; // 50MB
+    const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
       toast.error(`Fichier trop volumineux. Maximum: ${maxSize / (1024 * 1024)} MB`);
       return;
@@ -221,71 +221,117 @@ export default function SimulationEditor() {
     try {
       setUploadingFile(true);
       setUploadError(null);
+      console.log('📤 Début upload:', file.name, file.size, 'bytes');
       
-      // Utiliser la nouvelle fonction uploadGeometry
+      // Utiliser la méthode d'upload unique
       const result = await SimulationService.uploadGeometry({
         file,
         userId: user.id,
         simulationId: id,
+        geometryConfig: formData.geometryConfig
       });
       
+      console.log('✅ Upload réussi:', result);
+      
+      // Mise à jour du formulaire
       setFormData(prev => ({
         ...prev,
         geometryConfig: {
+          ...prev.geometryConfig,
           file_url: result.fileUrl,
           file_name: result.fileName,
           dimensions: prev.geometryConfig.dimensions,
+          uploaded_at: new Date().toISOString(),
+          file_size: file.size,
+          file_type: file.type
         },
       }));
       
-      toast.success("Fichier géométrique téléchargé avec succès");
+      toast.success("✅ Fichier géométrique téléchargé avec succès");
+      
+      // Si simulation existe, mettre à jour
+      if (id && simulation) {
+        try {
+          await SimulationService.updateSimulation(id, {
+            name: simulation.name,
+            description: simulation.description,
+            geometryType: 'complex',
+            config: {
+              ...simulation,
+              geometry_config: {
+                file_url: result.fileUrl,
+                file_name: result.fileName,
+                type: 'uploaded_file'
+              }
+            }
+          });
+        } catch (updateError) {
+          console.warn('⚠️ Échec mise à jour simulation:', updateError);
+        }
+      }
+      
     } catch (error: any) {
-      console.error('Upload error:', error);
-      const errorMessage = error.message || 'Erreur inconnue lors du téléchargement';
+      console.error('❌ Upload échoué:', error);
+      
+      let errorMessage = error.message || 'Erreur inconnue';
+      
+      if (error.message?.includes('row-level security') || error.message?.includes('RLS')) {
+        errorMessage = 'Erreur de permission. Vérifiez vos politiques RLS dans Supabase Storage.';
+      } else if (error.message?.includes('network') || error.message?.includes('fetch')) {
+        errorMessage = 'Erreur réseau. Vérifiez votre connexion.';
+      } else if (error.message?.includes('timeout')) {
+        errorMessage = 'Timeout. Le fichier est peut-être trop volumineux.';
+      }
+      
       setUploadError(errorMessage);
-      toast.error(`Erreur upload: ${errorMessage}`);
+      toast.error(`❌ Échec upload: ${errorMessage}`);
+      
     } finally {
       setUploadingFile(false);
-      // Reset le input file
       if (e.target) e.target.value = '';
     }
   };
 
-  // Fonction alternative d'upload si la première échoue
-  const handleAlternativeUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file || !user?.id) return;
-
-    try {
-      setUploadingFile(true);
-      setUploadError(null);
-      
-      // Utiliser la fonction alternative
-      const result = await SimulationService.uploadGeometryViaEdgeFunction({
-        file,
-        userId: user.id,
-        simulationId: id,
-      });
-      
-      setFormData(prev => ({
-        ...prev,
-        geometryConfig: {
-          file_url: result.fileUrl,
-          file_name: result.fileName,
-          dimensions: prev.geometryConfig.dimensions,
-        },
-      }));
-      
-      toast.success("Fichier géométrique téléchargé avec succès (méthode alternative)");
-    } catch (error: any) {
-      console.error('Alternative upload error:', error);
-      const errorMessage = error.message || 'Erreur inconnue lors du téléchargement';
-      setUploadError(errorMessage);
-      toast.error(`Erreur upload: ${errorMessage}`);
-    } finally {
-      setUploadingFile(false);
-      if (e.target) e.target.value = '';
-    }
+  // Générer fichier VTP de test
+  const generateTestVTP = () => {
+    const testVTP = `<?xml version="1.0"?>
+<VTKFile type="PolyData" version="1.0" byte_order="LittleEndian">
+  <PolyData>
+    <Piece NumberOfPoints="8" NumberOfPolys="12">
+      <Points>
+        <DataArray type="Float32" NumberOfComponents="3" format="ascii">
+          0 0 0   1 0 0   1 1 0   0 1 0
+          0 0 1   1 0 1   1 1 1   0 1 1
+        </DataArray>
+      </Points>
+      <Polys>
+        <DataArray type="Int32" Name="connectivity" format="ascii">
+          0 1 2  0 2 3  4 5 6  4 6 7
+          0 1 5  0 5 4  1 2 6  1 6 5
+          2 3 7  2 7 6  3 0 4  3 4 7
+        </DataArray>
+        <DataArray type="Int32" Name="offsets" format="ascii">
+          3 6 9 12 15 18 21 24 27 30 33 36
+        </DataArray>
+      </Polys>
+      <PointData Scalars="Temperature">
+        <DataArray type="Float32" Name="Temperature" format="ascii">
+          200 180 160 140 120 100 80 60
+        </DataArray>
+      </PointData>
+    </Piece>
+  </PolyData>
+</VTKFile>`;
+    
+    const blob = new Blob([testVTP], { type: 'application/xml' });
+    const file = new File([blob], 'test_cube.vtp', { type: 'application/xml' });
+    
+    // Simuler upload
+    const event = {
+      target: { files: [file] }
+    } as React.ChangeEvent<HTMLInputElement>;
+    
+    handleFileUpload(event);
   };
 
   // Sauvegarde
@@ -320,15 +366,15 @@ export default function SimulationEditor() {
 
       if (id) {
         await SimulationService.updateSimulation(id, payload);
-        toast.success('Simulation mise à jour');
+        toast.success('✅ Simulation mise à jour');
         refresh();
       } else {
         const newSim = await SimulationService.createSimulation(payload);
-        toast.success('Simulation créée');
+        toast.success('✅ Simulation créée');
         setLocation(`/simulation/${newSim.id}`);
       }
     } catch (error: any) {
-      console.error('Save error:', error);
+      console.error('❌ Save error:', error);
       toast.error(error.message || 'Erreur lors de la sauvegarde');
     } finally {
       setIsSaving(false);
@@ -347,7 +393,6 @@ export default function SimulationEditor() {
       switch (format) {
         case 'png':
           if (results.vtk_file_url) {
-            // Pour PNG, créer un lien vers l'image
             url = results.vtk_file_url.replace('.vtp', '.png').replace('.stl', '.png');
             filename += '.png';
           } else {
@@ -377,17 +422,17 @@ export default function SimulationEditor() {
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
-        toast.success(`Export ${format} téléchargé`);
+        toast.success(`✅ Export ${format} téléchargé`);
       }
     } catch (error) {
-      console.error('Export error:', error);
+      console.error('❌ Export error:', error);
       toast.error('Erreur lors de l\'export');
     } finally {
       setIsExporting(false);
     }
   };
 
-  // Gestion de la sélection de points dans le viewer
+  // Gestion de la sélection de points
   const handlePointSelected = useCallback((data: {
     position: [number, number, number];
     field_values: Record<string, number>;
@@ -398,20 +443,20 @@ export default function SimulationEditor() {
     
     const temp = data.field_values.temperature;
     if (temp !== undefined) {
-      toast.info(`Température sélectionnée: ${temp.toFixed(1)}°C`, {
+      toast.info(`📌 Température sélectionnée: ${temp.toFixed(1)}°C`, {
         description: `Position: ${data.position.map(v => v.toFixed(2)).join(', ')}`,
         duration: 3000,
       });
     }
   }, []);
 
-  // Copie des données du point sélectionné
+  // Copie des données
   const copySelectedPointData = () => {
     if (!selectedPoint) return;
     
     const text = JSON.stringify(selectedPoint, null, 2);
     navigator.clipboard.writeText(text);
-    toast.success('Données copiées dans le presse-papier');
+    toast.success('📋 Données copiées dans le presse-papier');
   };
 
   // Toggle plein écran
@@ -482,18 +527,20 @@ export default function SimulationEditor() {
               Sauvegarder
             </Button>
             
-            <Button
-              onClick={() => startSimulation()}
-              disabled={isRunning || !id}
-              className="bg-blue-600 hover:bg-blue-700 min-w-[120px]"
-            >
-              {isRunning ? (
-                <Loader2 className="w-4 h-4 animate-spin mr-2" />
-              ) : (
-                <Play className="w-4 h-4 mr-2" />
-              )}
-              {isRunning ? 'En cours...' : 'Lancer'}
-            </Button>
+            {id && (
+              <Button
+                onClick={() => startSimulation()}
+                disabled={isRunning || !id}
+                className="bg-blue-600 hover:bg-blue-700 min-w-[120px]"
+              >
+                {isRunning ? (
+                  <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                ) : (
+                  <Play className="w-4 h-4 mr-2" />
+                )}
+                {isRunning ? 'En cours...' : 'Lancer'}
+              </Button>
+            )}
             
             {results && (
               <Button
@@ -584,6 +631,15 @@ export default function SimulationEditor() {
                             {uploadingFile ? 'Upload en cours...' : 'Choisir un fichier'}
                           </label>
                         </Button>
+                        
+                        <Button
+                          variant="outline"
+                          onClick={generateTestVTP}
+                          className="whitespace-nowrap"
+                          title="Générer un fichier de test VTP"
+                        >
+                          <TestTube className="w-4 h-4" />
+                        </Button>
                       </div>
                       
                       <div className="text-xs text-zinc-400">
@@ -592,44 +648,45 @@ export default function SimulationEditor() {
                     </div>
                     
                     {formData.geometryConfig.file_name && (
-                      <div className="flex items-center justify-between p-2 bg-green-900/20 rounded border border-green-800/50">
-                        <div className="flex items-center gap-2">
-                          <CheckCircle className="w-4 h-4 text-green-400" />
-                          <span className="text-sm truncate max-w-[200px]" title={formData.geometryConfig.file_name}>
-                            {formatFileName(formData.geometryConfig.file_name)}
-                          </span>
+                      <div className="p-3 bg-green-900/20 rounded border border-green-800/50">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle className="w-4 h-4 text-green-400" />
+                            <div>
+                              <div className="font-medium truncate max-w-[200px]" title={formData.geometryConfig.file_name}>
+                                {formatFileName(formData.geometryConfig.file_name)}
+                              </div>
+                              <div className="text-xs text-green-300">
+                                ✓ Prêt pour simulation
+                              </div>
+                            </div>
+                          </div>
+                          {formData.geometryConfig.file_url && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => window.open(formData.geometryConfig.file_url, '_blank')}
+                            >
+                              <Eye className="w-3 h-3" />
+                            </Button>
+                          )}
                         </div>
-                        <Badge variant="outline" className="bg-green-900/30 text-green-300">
-                          ✓ Fichier chargé
-                        </Badge>
                       </div>
                     )}
                     
                     {uploadError && (
-                      <Alert variant="destructive" className="bg-red-900/20 border-red-800 p-3">
-                        <div className="flex items-center gap-2">
-                          <XCircle className="w-4 h-4" />
-                          <AlertDescription className="text-sm">
-                            {uploadError}
-                          </AlertDescription>
-                        </div>
-                        <div className="mt-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => {
-                              const input = document.createElement('input');
-                              input.type = 'file';
-                              input.accept = '.stl,.step,.obj,.vtp,.vti,.ply,.vtk';
-                              input.onchange = (e) => handleAlternativeUpload(e as any);
-                              input.click();
-                            }}
-                            className="w-full text-xs"
-                          >
-                            <FileUp className="w-3 h-3 mr-2" />
-                            Essayer la méthode alternative
-                          </Button>
-                        </div>
+                      <Alert variant="destructive" className="bg-red-900/20 border-red-800">
+                        <AlertCircle className="w-4 h-4" />
+                        <AlertDescription className="ml-2">
+                          <div className="font-semibold mb-1">Erreur d'upload</div>
+                          <div className="mb-2 text-sm">{uploadError}</div>
+                          <div className="text-xs text-red-300">
+                            Vérifiez: 
+                            1. Votre connexion internet
+                            2. Les politiques RLS dans Supabase
+                            3. Que le fichier est valide
+                          </div>
+                        </AlertDescription>
                       </Alert>
                     )}
                   </div>
@@ -862,7 +919,6 @@ export default function SimulationEditor() {
                         <SelectItem value="volume">Volume</SelectItem>
                         <SelectItem value="wireframe">Fil de fer</SelectItem>
                         <SelectItem value="point_cloud">Points</SelectItem>
-                        <SelectItem value="slice">Coupe</SelectItem>
                       </SelectContent>
                     </Select>
                     
@@ -880,7 +936,6 @@ export default function SimulationEditor() {
                         <SelectItem value="heat">Chaleur</SelectItem>
                         <SelectItem value="coolwarm">Froid-Chaud</SelectItem>
                         <SelectItem value="rainbow">Arc-en-ciel</SelectItem>
-                        <SelectItem value="viridis">Viridis</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -1204,7 +1259,7 @@ export default function SimulationEditor() {
                         <div className="grid grid-cols-2 gap-4">
                           <div>
                             <div className="text-sm text-zinc-400">ID Simulation</div>
-                            <div className="font-mono text-sm bg-zinc-800/50 p-2 rounded mt-1">
+                            <div className="font-mono text-sm bg-zinc-800/50 p-2 rounded mt-1 break-all">
                               {simulation.id}
                             </div>
                           </div>
@@ -1250,7 +1305,7 @@ export default function SimulationEditor() {
                         <div>
                           <div className="text-sm text-zinc-400 mb-2">Configuration complète</div>
                           <div className="bg-zinc-900 p-4 rounded-lg text-sm overflow-auto max-h-[300px]">
-                            <pre className="whitespace-pre-wrap break-words">
+                            <pre className="whitespace-pre-wrap break-words text-xs">
                               {JSON.stringify(simulation, null, 2)}
                             </pre>
                           </div>
