@@ -45,7 +45,9 @@ SET allowed_mime_types = ARRAY[
   'application/vnd.kitware.vtp', -- VTP
   'application/vnd.kitware.vti', -- VTI
   'text/plain',                -- Fichiers texte
-  'application/json'           -- Fichiers JSON
+  'application/json',          -- Fichiers JSON
+  'application/xml',           -- XML (STEP/VTK)
+  'text/xml'                   -- XML (STEP/VTK)
 ]
 WHERE id = 'geometries';
 
@@ -111,7 +113,17 @@ ON storage.objects(bucket_id, name);
 CREATE INDEX IF NOT EXISTS idx_storage_objects_bucket_id_folder 
 ON storage.objects(bucket_id, (storage.foldername(name)));
 
--- 10. FONCTION UTILITAIRE POUR VÉRIFIER LES PERMISSIONS
+-- 10. HARMONISATION DES TYPES ET POLITIQUES EDGE FUNCTIONS
+-- Permettre à l'Edge Function (service_role) de mettre à jour les simulations
+CREATE POLICY "Edge Function can update anything" 
+ON public.simulations FOR UPDATE 
+USING (auth.jwt() ->> 'role' = 'service_role');
+
+-- S'assurer que mesh_density peut accepter des valeurs flexibles si nécessaire
+-- ALTER TABLE public.simulations ALTER COLUMN mesh_density TYPE TEXT; 
+-- Note: Déjà géré par le mapping côté frontend pour l'instant.
+
+-- 11. FONCTION UTILITAIRE POUR VÉRIFIER LES PERMISSIONS
 CREATE OR REPLACE FUNCTION check_upload_permissions(user_id uuid, file_path text)
 RETURNS boolean AS $$
 DECLARE
