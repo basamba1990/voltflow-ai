@@ -82,12 +82,40 @@ const validateFile = (file: File): void => {
   const validExtensions = [
     '.stl', '.step', '.stp', '.obj', 
     '.vtp', '.vti', '.ply', '.vtk',
-    '.iges', '.igs'
+    '.iges', '.igs', '.xml'
   ];
   
   const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
   if (!validExtensions.includes(fileExt)) {
     throw new Error(`Format non supporté. Formats acceptés: ${validExtensions.join(', ')}`);
+  }
+};
+
+// Fonction utilitaire pour déterminer le Content-Type basé sur l'extension
+const getContentTypeForFile = (fileName: string, detectedType: string): string => {
+  const ext = fileName.toLowerCase().split('.').pop();
+  
+  switch (ext) {
+    case 'vtp':
+    case 'vti':
+      return 'application/xml'; // Forcer XML pour les formats VTK XML
+    case 'stl':
+      return 'model/stl';
+    case 'step':
+    case 'stp':
+      return 'application/x-step';
+    case 'obj':
+      return 'model/obj';
+    case 'iges':
+    case 'igs':
+      return 'application/iges';
+    case 'ply':
+    case 'vtk':
+      return 'text/plain';
+    case 'xml':
+      return 'application/xml';
+    default:
+      return detectedType || 'application/octet-stream';
   }
 };
 
@@ -359,13 +387,17 @@ const uploadGeometryDirect = async (
     
     console.log('📤 Upload direct vers storage:', fileName);
     
+    // Détection intelligente du Content-Type
+    const contentType = getContentTypeForFile(params.file.name, params.file.type);
+    console.log('📄 Content-Type détecté:', contentType);
+    
     // UPLOAD DIRECT - C'EST CE QUI FONCTIONNE
     const { data: uploadData, error: uploadError } = await supabase.storage
       .from('geometries')
       .upload(fileName, params.file, {
         cacheControl: '3600',
         upsert: false,
-        contentType: 'application/octet-stream'
+        contentType: contentType
       });
     
     if (uploadError) {
@@ -375,6 +407,12 @@ const uploadGeometryDirect = async (
       if (uploadError.message?.includes('row-level security') || uploadError.message?.includes('403')) {
         throw new Error('Erreur RLS. Vérifiez vos politiques dans Supabase Storage → geometries');
       }
+      
+      // Erreur MIME type
+      if (uploadError.message?.includes('415') || uploadError.message?.includes('Unsupported Media Type')) {
+        throw new Error(`Type MIME non supporté: ${contentType}. Contactez l'administrateur pour ajouter ce type.`);
+      }
+      
       throw uploadError;
     }
     
