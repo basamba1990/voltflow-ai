@@ -98,12 +98,13 @@ const getContentTypeForFile = (fileName: string, detectedType: string): string =
   switch (ext) {
     case 'vtp':
     case 'vti':
-      return 'application/xml'; // Forcer XML pour les formats VTK XML
+    case 'xml':
+      return 'application/xml';
     case 'stl':
       return 'model/stl';
     case 'step':
     case 'stp':
-      return 'application/x-step';
+      return 'application/step'; // Utiliser le type standard
     case 'obj':
       return 'model/obj';
     case 'iges':
@@ -112,9 +113,11 @@ const getContentTypeForFile = (fileName: string, detectedType: string): string =
     case 'ply':
     case 'vtk':
       return 'text/plain';
-    case 'xml':
-      return 'application/xml';
     default:
+      // Si le navigateur détecte XML (souvent le cas pour STEP/VTK), on l'autorise
+      if (detectedType === 'application/xml' || detectedType === 'text/xml') {
+        return detectedType;
+      }
       return detectedType || 'application/octet-stream';
   }
 };
@@ -294,11 +297,19 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       })
       .eq('id', simulationId);
 
+    // Mapping Mesh Density (Front) -> Elements (Fortran) pour Artemis
+    const meshMap: Record<string, number> = { low: 500, medium: 1000, high: 5000 };
+    const mesh_elements = meshMap[simulation.mesh_density] || 1000;
+
     const { data, error } = await supabase.functions.invoke('simulate', {
       body: {
         simulation_id: simulationId,
-        config: simulation,
-        user_id: session.user.id
+        config: {
+          ...simulation,
+          mesh_elements // Ajout du mapping pour le backend
+        },
+        user_id: session.user.id,
+        timestamp: new Date().toISOString() // Traçabilité demandée
       }
     });
 
@@ -357,7 +368,7 @@ export const uploadGeometry = async (
     } catch (directError: any) {
       console.log('❌ Upload direct échoué, tentative Edge Function...', directError.message);
       
-      // Option 2: Edge Function comme fallback
+      // Si l'erreur est liée au type MIME (415), on tente l'Edge Function qui est plus permissive
       const edgeResult = await uploadGeometryViaEdgeFunction(params);
       console.log('✅ Edge Function réussie');
       return edgeResult;
