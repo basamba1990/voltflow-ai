@@ -209,12 +209,17 @@ export default function SimulationEditor() {
       'application/sla',
       'model/stl',
       'application/x-step',
+      'application/step',
       'text/plain',
+      'application/xml',
+      'text/xml',
       'model/obj',
       'application/vnd.kitware.vtp',
       'application/vnd.kitware.vti',
       'application/octet-stream',
-      'application/vnd.kitware'
+      'application/vnd.kitware',
+      'application/x-iges',
+      'model/iges'
     ];
     
     if (!allowedMimeTypes.includes(file.type) && file.type !== '') {
