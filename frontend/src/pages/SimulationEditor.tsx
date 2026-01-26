@@ -246,15 +246,17 @@ export default function SimulationEditor() {
     try {
       setUploadingFile(true);
       setUploadError(null);
-      console.log('📤 Début upload:', file.name, file.size, 'bytes');
+      console.log('📤 Début upload:', file.name, file.size, 'bytes', 'type:', file.type);
       
       // 4. APPEL DU SERVICE CORRIGÉ (upload direct + fallback Edge Function)
+      console.log('⏳ Appel SimulationService.uploadGeometry...');
       const result = await SimulationService.uploadGeometry({
         file,
         userId: user.id,
         simulationId: id,
         geometryConfig: formData.geometryConfig
       });
+      console.log('✅ Résultat reçu du service:', result);
       
       console.log('✅ Upload réussi:', result);
       
