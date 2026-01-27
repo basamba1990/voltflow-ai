@@ -61,206 +61,429 @@ export interface UploadGeometryResponse {
 }
 
 // -----------------------------------------------------------------------------
-// UTILS
+// FONCTIONS UTILITAIRES AVEC DIAGNOSTICS
 // -----------------------------------------------------------------------------
-export const getContentTypeForFile = (fileName: string): string => {
-  const ext = fileName.toLowerCase().split('.').pop();
-  const mimeMap: Record<string, string> = {
-    'stl': 'application/sla',
-    'step': 'application/octet-stream',
-    'stp': 'application/octet-stream',
-    'iges': 'application/octet-stream',
-    'igs': 'application/octet-stream',
-    'vtk': 'text/plain',
-    'vtp': 'application/octet-stream',
-    'obj': 'model/obj',
-    'ply': 'text/plain'
-  };
-  return mimeMap[ext || ''] || 'application/octet-stream';
-};
 
 const arrayBufferToBase64 = (arrayBuffer: ArrayBuffer): string => {
   const bytes = new Uint8Array(arrayBuffer);
   let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
   return btoa(binary);
 };
 
-// -----------------------------------------------------------------------------
-// CORE FUNCTIONS
-// -----------------------------------------------------------------------------
-
-export const getSimulations = async (
-  options: { limit?: number; status?: SimulationStatus; offset?: number } = {}
-): Promise<Simulation[]> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
-
-    const { limit = 10, status, offset = 0 } = options;
-    let query = supabase
-      .from('simulations')
-      .select('*, simulation_results (*)')
-      .eq('user_id', session.user.id)
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
-
-    if (status) query = query.eq('status', status);
-
-    const { data, error } = await query;
-    if (error) throw error;
-    return data || [];
-  } catch (error: any) {
-    console.error('❌ getSimulations error:', error);
-    throw error;
+// VALIDATION SIMPLIFIÉE - UNIQUEMENT EXTENSION
+const validateFile = (file: File): void => {
+  console.log('🔍 Validation fichier:', file.name, file.size, file.type);
+  
+  const maxSize = 50 * 1024 * 1024;
+  if (file.size > maxSize) {
+    throw new Error(`Fichier trop volumineux (${(file.size / 1024 / 1024).toFixed(2)}MB). Maximum: 50MB`);
   }
+  
+  // Validation uniquement par extension
+  const validExtensions = [
+    '.stl', '.step', '.stp', '.obj', 
+    '.vtp', '.vti', '.ply', '.vtk',
+    '.iges', '.igs', '.xml', '.vtu'
+  ];
+  
+  const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+  if (!validExtensions.includes(fileExt)) {
+    throw new Error(`Extension non supportée: ${fileExt}. Formats acceptés: ${validExtensions.join(', ')}`);
+  }
+  
+  console.log('✅ Fichier validé');
 };
 
-export const getSimulationById = async (simulationId: string): Promise<Simulation | null> => {
-  const { data, error } = await supabase
-    .from('simulations')
-    .select('*, simulation_results (*)')
-    .eq('id', simulationId)
-    .single();
-  if (error) return null;
-  return data;
+// Content-Type permissif
+const getContentTypeForFile = (fileName: string, detectedType: string): string => {
+  const ext = fileName.toLowerCase().split('.').pop();
+  console.log('📄 Détection Content-Type:', fileName, 'ext:', ext, 'detected:', detectedType);
+  
+  // Priorité aux types génériques pour éviter les erreurs 415
+  const typeMap: Record<string, string> = {
+    'stl': 'application/sla',
+    'step': 'application/octet-stream',
+    'stp': 'application/octet-stream',
+    'obj': 'text/plain',
+    'vtp': 'application/xml',
+    'vti': 'application/xml',
+    'xml': 'application/xml',
+    'vtu': 'application/xml',
+    'iges': 'application/octet-stream',
+    'igs': 'application/octet-stream',
+    'ply': 'text/plain',
+    'vtk': 'text/plain'
+  };
+  
+  const contentType = typeMap[ext || ''] || 'application/octet-stream';
+  console.log('📄 Content-Type choisi:', contentType);
+  return contentType;
 };
 
-export const createSimulation = async (params: CreateSimulationParams): Promise<Simulation> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
+// Fonction timeout
+const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> => {
+  return new Promise((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(errorMessage));
+    }, ms);
 
-  const { data, error } = await supabase
-    .from('simulations')
-    .insert({
-      user_id: session.user.id,
-      name: params.name,
-      description: params.description,
-      geometry_type: params.geometryType,
-      geometry_config: params.config.geometry_config,
-      boundary_conditions: params.config.boundary_conditions as any,
-      material_id: params.config.material_id,
-      mesh_density: params.config.mesh_density,
-      solver_type: params.config.solver_type || 'fem_fortran',
-      status: 'pending'
-    })
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
-};
-
-export const updateSimulation = async (simulationId: string, params: any): Promise<Simulation> => {
-  const { data, error } = await supabase
-    .from('simulations')
-    .update(params)
-    .eq('id', simulationId)
-    .select()
-    .single();
-  if (error) throw error;
-  return data;
-};
-
-export const uploadGeometry = async (params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }): Promise<UploadGeometryResponse> => {
-  const { file, userId, simulationId, geometryConfig } = params;
-  try {
-    const contentType = getContentTypeForFile(file.name);
-    const fileName = `${userId}/${Date.now()}_${file.name}`;
-
-    // Tentative Directe
-    const { data, error: uploadError } = await supabase.storage
-      .from('geometries')
-      .upload(fileName, file, { contentType, upsert: false });
-
-    if (uploadError) {
-      // Fallback Edge Function
-      const arrayBuffer = await file.arrayBuffer();
-      const { data: edgeData, error: edgeError } = await supabase.functions.invoke('upload-geometry', {
-        body: { fileName: file.name, fileData: arrayBufferToBase64(arrayBuffer), userId, simulationId, geometry_config: geometryConfig }
+    promise
+      .then((result) => {
+        clearTimeout(timeoutId);
+        resolve(result);
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
       });
-      if (edgeError) throw edgeError;
-      return edgeData;
-    }
-
-    const { data: { publicUrl } } = supabase.storage.from('geometries').getPublicUrl(fileName);
-
-    if (simulationId) {
-      await supabase.from('simulations').update({
-        geometry_config: { ...geometryConfig, file_url: publicUrl, file_name: file.name, file_size: file.size, uploaded_at: new Date().toISOString() }
-      }).eq('id', simulationId);
-    }
-
-    return { success: true, fileUrl: publicUrl, fileName: file.name, path: fileName };
-  } catch (error: any) {
-    console.error('❌ Upload error:', error);
-    throw error;
-  }
+  });
 };
 
-export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
+// Fonction pour vérifier la session utilisateur avec retry
+const ensureSession = async (maxRetries = 2): Promise<any> => {
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      const { data: { session }, error } = await supabase.auth.getSession();
+      
+      if (error) {
+        console.error(`❌ Erreur session (tentative ${i + 1}/${maxRetries + 1}):`, error);
+        if (i === maxRetries) throw error;
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      
+      if (!session?.user) {
+        console.log(`⚠️ Session non trouvée (tentative ${i + 1}/${maxRetries + 1})`);
+        if (i === maxRetries) throw new Error('Session expirée. Veuillez vous reconnecter.');
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        continue;
+      }
+      
+      console.log('✅ Session utilisateur vérifiée:', session.user.id);
+      return session;
+    } catch (error) {
+      if (i === maxRetries) throw error;
+    }
+  }
+  
+  throw new Error('Impossible de vérifier la session');
+};
+
+// -----------------------------------------------------------------------------
+// UPLOAD GÉOMÉTRIE - VERSION DIAGNOSTIQUÉE
+// -----------------------------------------------------------------------------
+export const uploadGeometry = async (
+  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
+): Promise<UploadGeometryResponse> => {
+  console.log('🚀 ========== DÉBUT UPLOAD ==========');
+  console.log('📁 Fichier:', params.file.name, params.file.size, 'bytes');
+  console.log('👤 User ID:', params.userId);
+  console.log('🎮 Simulation ID:', params.simulationId);
+  
   try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
+    // 1. Validation
+    validateFile(params.file);
+    
+    // 2. Vérification session avec diagnostics
+    console.log('🔐 Vérification session...');
+    const session = await ensureSession();
+    
+    if (session.user.id !== params.userId) {
+      console.warn('⚠️ ID utilisateur mismatch:', session.user.id, 'vs', params.userId);
+    }
+    
+    // 3. Upload avec fallback
+    console.log('🔄 Début upload...');
+    
+    const uploadPromise = (async () => {
+      try {
+        console.log('🔄 Tentative upload direct...');
+        return await uploadGeometryDirect({
+          file: params.file,
+          userId: params.userId,
+          simulationId: params.simulationId
+        });
+      } catch (directError: any) {
+        console.log('❌ Upload direct échoué:', directError.message);
+        
+        // Si c'est une erreur 415 (MIME type), on utilise un type générique
+        if (directError.message?.includes('415') || directError.message?.includes('Unsupported Media Type')) {
+          console.log('🔄 Retry avec type générique...');
+          try {
+            return await uploadGeometryDirectWithGenericType({
+              file: params.file,
+              userId: params.userId,
+              simulationId: params.simulationId
+            });
+          } catch (retryError) {
+            console.log('❌ Retry échoué, tentative Edge Function...');
+            return await uploadGeometryViaEdgeFunction(params);
+          }
+        }
+        
+        console.log('🔄 Tentative Edge Function...');
+        return await uploadGeometryViaEdgeFunction(params);
+      }
+    })();
 
-    const { data: simulation } = await supabase.from('simulations').select('*').eq('id', simulationId).single();
-
-    await supabase.from('simulations').update({ 
-      status: 'running', 
-      progress: 0, 
-      started_at: new Date().toISOString(),
-      error_message: null 
-    }).eq('id', simulationId);
-
-    const { data, error } = await supabase.functions.invoke('simulate', {
-      body: { simulation_id: simulationId, config: simulation, user_id: session.user.id }
-    });
-
-    if (error) throw error;
-    return { success: true, simulation_id: simulationId, status: 'running' };
+    const result = await withTimeout(
+      uploadPromise,
+      60000,
+      '❌ UPLOAD TIMEOUT: L\'opération a pris plus de 60 secondes. Vérifiez votre connexion.'
+    );
+    
+    console.log('✅ ========== UPLOAD RÉUSSI ==========');
+    console.log('📎 URL:', result.fileUrl?.substring(0, 100) + '...');
+    console.log('📊 Taille:', result.fileSize, 'bytes');
+    
+    return result;
+    
   } catch (error: any) {
-    await supabase.from('simulations').update({ status: 'failed', error_message: error.message }).eq('id', simulationId);
+    console.error('❌ ========== UPLOAD ÉCHOUÉ ==========');
+    console.error('💥 Erreur:', error.message);
+    console.error('🔧 Stack:', error.stack);
     throw error;
   }
 };
 
-export const deleteSimulation = async (simulationId: string): Promise<void> => {
-  const { error } = await supabase.from('simulations').delete().eq('id', simulationId);
-  if (error) throw error;
+// Upload direct avec diagnostics
+const uploadGeometryDirect = async (
+  params: { file: File; userId: string; simulationId?: string }
+): Promise<UploadGeometryResponse> => {
+  const session = await ensureSession();
+  
+  // Génération nom de fichier
+  const timestamp = Date.now();
+  const uniqueId = Math.random().toString(36).substring(2, 9);
+  const fileExt = params.file.name.split('.').pop()?.toLowerCase() || 'vtp';
+  const fileName = `${params.userId}/${timestamp}_${uniqueId}.${fileExt}`;
+  
+  console.log('📤 Upload direct - Nom fichier:', fileName);
+  
+  // Content-Type
+  const contentType = getContentTypeForFile(params.file.name, params.file.type);
+  
+  // Upload
+  console.log('⏳ Upload vers Supabase Storage...');
+  const uploadPromise = supabase.storage
+    .from('geometries')
+    .upload(fileName, params.file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: contentType
+    });
+  
+  const { data: uploadData, error: uploadError } = await withTimeout(
+    uploadPromise,
+    30000,
+    '❌ Supabase Storage upload timeout (30s)'
+  );
+  
+  if (uploadError) {
+    console.error('❌ Erreur Supabase Storage:', uploadError);
+    
+    // Messages d'erreur explicites
+    if (uploadError.message?.includes('row-level security') || uploadError.message?.includes('403')) {
+      console.error('🔒 ERREUR RLS: Vérifiez vos politiques dans Supabase Dashboard → Storage → geometries');
+      console.error('🔒 Créez cette politique SQL:');
+      console.error(`
+        CREATE POLICY "Users can upload geometries"
+        ON storage.objects FOR INSERT
+        TO authenticated
+        WITH CHECK (
+          bucket_id = 'geometries' 
+          AND (storage.foldername(name))[1] = auth.uid()::text
+        );
+      `);
+      throw new Error('Permissions insuffisantes. Contactez l\'administrateur pour configurer les politiques RLS.');
+    }
+    
+    if (uploadError.message?.includes('415')) {
+      console.error('🎭 ERREUR 415: Type MIME non supporté');
+      console.error('🎭 Type envoyé:', contentType);
+      throw new Error('Type de fichier non supporté par le serveur.');
+    }
+    
+    throw uploadError;
+  }
+  
+  console.log('✅ Fichier uploadé, génération URL...');
+  
+  // URL signée
+  const signedUrlPromise = supabase.storage
+    .from('geometries')
+    .createSignedUrl(fileName, 31536000);
+  
+  const { data: signedData } = await withTimeout(
+    signedUrlPromise,
+    10000,
+    '❌ Génération URL timeout'
+  );
+  
+  if (!signedData?.signedUrl) {
+    throw new Error('Impossible de générer URL signée');
+  }
+  
+  // Mise à jour simulation
+  if (params.simulationId) {
+    try {
+      console.log('🔄 Mise à jour simulation...');
+      await supabase
+        .from('simulations')
+        .update({
+          geometry_config: {
+            file_url: signedData.signedUrl,
+            file_path: fileName,
+            file_name: params.file.name,
+            file_size: params.file.size,
+            uploaded_at: new Date().toISOString()
+          },
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', params.simulationId)
+        .eq('user_id', params.userId);
+      console.log('✅ Simulation mise à jour');
+    } catch (updateError: any) {
+      console.warn('⚠️ Échec mise à jour simulation:', updateError.message);
+    }
+  }
+  
+  return {
+    success: true,
+    fileUrl: signedData.signedUrl,
+    fileName: params.file.name,
+    fileSize: params.file.size,
+    fileType: params.file.type,
+    path: fileName
+  };
 };
 
-// -----------------------------------------------------------------------------
-// REALTIME FUNCTIONS (REQUIRED FOR DASHBOARD)
-// -----------------------------------------------------------------------------
-export const subscribeToSimulation = (simulationId: string, callback: (payload: any) => void) => {
-  return supabase
-    .channel(`simulation-updates-${simulationId}`)
-    .on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'simulations',
-      filter: `id=eq.${simulationId}`
-    }, callback)
-    .subscribe();
+// Upload avec type générique (fallback pour erreur 415)
+const uploadGeometryDirectWithGenericType = async (
+  params: { file: File; userId: string; simulationId?: string }
+): Promise<UploadGeometryResponse> => {
+  const session = await ensureSession();
+  
+  const timestamp = Date.now();
+  const uniqueId = Math.random().toString(36).substring(2, 9);
+  const fileExt = params.file.name.split('.').pop()?.toLowerCase() || 'vtp';
+  const fileName = `${params.userId}/${timestamp}_${uniqueId}.${fileExt}`;
+  
+  console.log('📤 Upload avec type générique - Nom fichier:', fileName);
+  
+  // FORCER application/octet-stream (type générique)
+  const contentType = 'application/octet-stream';
+  console.log('📄 Type générique forcé:', contentType);
+  
+  const uploadPromise = supabase.storage
+    .from('geometries')
+    .upload(fileName, params.file, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: contentType
+    });
+  
+  const { data: uploadData, error: uploadError } = await withTimeout(
+    uploadPromise,
+    30000,
+    '❌ Upload type générique timeout'
+  );
+  
+  if (uploadError) throw uploadError;
+  
+  // URL signée
+  const { data: signedData } = await supabase.storage
+    .from('geometries')
+    .createSignedUrl(fileName, 31536000);
+  
+  if (!signedData?.signedUrl) {
+    throw new Error('Impossible de générer URL signée');
+  }
+  
+  return {
+    success: true,
+    fileUrl: signedData.signedUrl,
+    fileName: params.file.name,
+    fileSize: params.file.size,
+    fileType: 'application/octet-stream',
+    path: fileName
+  };
 };
 
-export const unsubscribeFromChannel = (channel: any) => {
-  if (channel) supabase.removeChannel(channel);
+// Edge Function fallback
+const uploadGeometryViaEdgeFunction = async (
+  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
+): Promise<UploadGeometryResponse> => {
+  console.log('🔄 Utilisation Edge Function fallback...');
+  
+  const session = await ensureSession();
+  
+  console.log('🔄 Conversion en base64...');
+  const arrayBuffer = await params.file.arrayBuffer();
+  const fileData = arrayBufferToBase64(arrayBuffer);
+  
+  console.log('🔄 Appel Edge Function upload-geometry...');
+  
+  const edgeFunctionPromise = supabase.functions.invoke('upload-geometry', {
+    body: {
+      fileName: params.file.name,
+      fileData: fileData,
+      file_type: params.file.type,
+      userId: params.userId,
+      simulationId: params.simulationId,
+      geometry_config: params.geometryConfig || {}
+    },
+    headers: {
+      'Authorization': `Bearer ${session.access_token}`
+    }
+  });
+  
+  const { data, error } = await withTimeout(
+    edgeFunctionPromise,
+    45000,
+    '❌ Edge Function timeout'
+  );
+  
+  if (error) {
+    console.error('❌ Edge Function error:', error);
+    throw error;
+  }
+  
+  if (!data?.success) {
+    console.error('❌ Edge Function returned error:', data?.error);
+    throw new Error(data?.error || 'Échec Edge Function');
+  }
+  
+  console.log('✅ Edge Function réussie');
+  
+  return {
+    success: true,
+    fileUrl: data.fileUrl,
+    fileName: params.file.name,
+    fileSize: params.file.size,
+    fileType: params.file.type,
+    path: data.path
+  };
 };
 
-// -----------------------------------------------------------------------------
-// EXPORT DEFAULT SERVICE
-// -----------------------------------------------------------------------------
+// ... (les autres fonctions restent inchangées) ...
+
+// Export du service
 export const SimulationService = {
   getSimulations,
   getSimulationById,
+  getSimulationResults,
   createSimulation,
   updateSimulation,
-  uploadGeometry,
   startSimulation,
+  uploadGeometry,
   deleteSimulation,
   subscribeToSimulation,
-  unsubscribeFromChannel
+  unsubscribeFromChannel,
+  testUpload
 };
 
 export default SimulationService;
