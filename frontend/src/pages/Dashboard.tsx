@@ -25,12 +25,7 @@ import {
 } from "lucide-react";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "@/contexts/AuthContext";
-import { 
-  getSimulations, 
-  subscribeToSimulation, 
-  unsubscribeFromChannel,
-  type Simulation 
-} from "@/services/simulation.service";
+import SimulationService, { type Simulation } from "@/services/simulation.service";
 import { useLocation } from "wouter";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
@@ -125,13 +120,14 @@ export default function Dashboard() {
       setError(null);
       setLoading(true);
       
-      const data = await getSimulations({ limit: 5 });
+      // CORRECTION : Utilisation de SimulationService.getSimulations()
+      const data = await SimulationService.getSimulations({ limit: 5 });
       setSimulations(data);
 
       // Clean up old channels
       realtimeChannelsRef.current.forEach(channel => {
         if (channel) {
-          unsubscribeFromChannel(channel);
+          SimulationService.unsubscribeFromChannel(channel);
         }
       });
       
@@ -142,7 +138,8 @@ export default function Dashboard() {
       
       const channels = runningSims.map((sim: Simulation) => {
         try {
-          return subscribeToSimulation(sim.id, (payload) => {
+          // CORRECTION : Utilisation de SimulationService.subscribeToSimulation()
+          return SimulationService.subscribeToSimulation(sim.id, (payload) => {
             setSimulations(prev => 
               prev.map(s => s.id === payload.new.id ? { ...s, ...payload.new } : s)
             );
@@ -198,7 +195,7 @@ export default function Dashboard() {
     return () => {
       realtimeChannelsRef.current.forEach(channel => {
         if (channel) {
-          unsubscribeFromChannel(channel);
+          SimulationService.unsubscribeFromChannel(channel);
         }
       });
       realtimeChannelsRef.current = [];
@@ -210,7 +207,7 @@ export default function Dashboard() {
       // Cleanup subscriptions before logout
       realtimeChannelsRef.current.forEach(channel => {
         if (channel) {
-          unsubscribeFromChannel(channel);
+          SimulationService.unsubscribeFromChannel(channel);
         }
       });
       realtimeChannelsRef.current = [];
