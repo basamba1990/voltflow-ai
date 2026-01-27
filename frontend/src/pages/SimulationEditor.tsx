@@ -74,14 +74,15 @@ export default function SimulationEditor() {
   const [isExporting, setIsExporting] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'finalizing'>('idle');
   const [selectedPoint, setSelectedPoint] = useState<{
     position: [number, number, number];
     field_values: Record<string, number>;
     element_id?: number;
   } | null>(null);
 
-  // Référence pour l'upload timeout
-  const uploadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // 🔥 CORRECTION : Référence correcte pour setTimeout
+  const uploadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 🔥 CORRECTION CRITIQUE : Cleanup des timeouts
   useEffect(() => {
@@ -233,6 +234,7 @@ export default function SimulationEditor() {
     setUploadingFile(true);
     setUploadError(null);
     setUploadProgress(0);
+    setUploadPhase('uploading');
     
     if (uploadTimeoutRef.current) {
       clearTimeout(uploadTimeoutRef.current);
@@ -242,6 +244,7 @@ export default function SimulationEditor() {
     const file = e.target.files?.[0];
     if (!file || !user?.id) {
       setUploadingFile(false);
+      setUploadPhase('idle');
       toast.error('Aucun fichier sélectionné ou utilisateur non connecté');
       return;
     }
@@ -252,6 +255,7 @@ export default function SimulationEditor() {
     
     if (!validExtensions.includes(fileExt)) {
       setUploadingFile(false);
+      setUploadPhase('idle');
       toast.error(`Extension non supportée: ${fileExt}. Formats: ${validExtensions.join(', ')}`);
       return;
     }
@@ -260,6 +264,7 @@ export default function SimulationEditor() {
     const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
       setUploadingFile(false);
+      setUploadPhase('idle');
       toast.error(`Fichier trop volumineux (${(file.size / 1024 / 1024).toFixed(1)}MB). Max: 50MB`);
       return;
     }
@@ -267,19 +272,30 @@ export default function SimulationEditor() {
     try {
       console.log('🚀 Début upload:', file.name);
       
-      // 🔥 CORRECTION : Timeout ABSOLU de 45 secondes
+      // 🔥 CORRECTION : Timeout ABSOLU de 60 secondes
       const timeoutPromise = new Promise<never>((_, reject) => {
         uploadTimeoutRef.current = setTimeout(() => {
-          reject(new Error('Upload timeout: 45 secondes dépassées'));
-        }, 45000);
+          reject(new Error('Upload timeout: 60 secondes dépassées'));
+        }, 60000);
       });
 
-      // Simulation de progression
+      // Simulation de progression avec phases claires
       const progressInterval = setInterval(() => {
-        setUploadProgress(prev => Math.min(prev + 5, 90));
+        setUploadProgress(prev => {
+          if (prev < 80) {
+            // Phase d'upload : 0-80%
+            return Math.min(prev + 5, 80);
+          } else {
+            // Phase de finalisation : 80-95%
+            if (uploadPhase !== 'finalizing') {
+              setUploadPhase('finalizing');
+            }
+            return Math.min(prev + 2, 95);
+          }
+        });
       }, 500);
 
-      // 🔥 CORRECTION : Upload DIRECT simplifié avec fallback explicite
+      // 🔥 CORRECTION : Upload via le service uniquement
       const uploadPromise = (async () => {
         try {
           console.log('🔄 Tentative upload via SimulationService...');
@@ -291,6 +307,7 @@ export default function SimulationEditor() {
           });
           
           clearInterval(progressInterval);
+          setUploadPhase('idle');
           setUploadProgress(100);
           
           console.log('✅ Upload réussi:', result);
@@ -314,17 +331,8 @@ export default function SimulationEditor() {
           
         } catch (error: any) {
           clearInterval(progressInterval);
-          
-          // 🔥 CORRECTION : Fallback manuel si le service échoue
-          console.warn('⚠️ Service upload échoué, tentative manuelle...', error.message);
-          
-          // Tentative manuelle directe
-          try {
-            return await uploadFileManually(file, user.id);
-          } catch (manualError: any) {
-            console.error('❌ Upload manuel échoué:', manualError);
-            throw manualError;
-          }
+          setUploadPhase('idle');
+          throw error;
         }
       })();
 
@@ -339,15 +347,17 @@ export default function SimulationEditor() {
       
       let errorMessage = error.message || 'Erreur inconnue';
       
-      // Messages d'erreur explicites
+      // 🔥 CORRECTION : Messages d'erreur explicites et précis
       if (error.message?.includes('timeout')) {
-        errorMessage = 'Le serveur met trop de temps à répondre. Vérifiez votre connexion.';
+        errorMessage = 'Le serveur n\'a pas confirmé l\'upload. Vérifiez vos permissions ou réessayez.';
       } else if (error.message?.includes('permission') || error.message?.includes('403')) {
         errorMessage = 'Permissions insuffisantes. Vérifiez votre compte.';
       } else if (error.message?.includes('415')) {
         errorMessage = 'Type de fichier non supporté. Essayez un format STL.';
       } else if (error.message?.includes('storage')) {
         errorMessage = 'Erreur de stockage. Contactez le support.';
+      } else if (error.message?.includes('session')) {
+        errorMessage = 'Session expirée. Veuillez vous reconnecter.';
       }
       
       setUploadError(errorMessage);
@@ -356,6 +366,7 @@ export default function SimulationEditor() {
     } finally {
       // 🔥 CORRECTION CRITIQUE : Toujours reset l'état d'upload
       setUploadingFile(false);
+      setUploadPhase('idle');
       setUploadProgress(0);
       
       if (uploadTimeoutRef.current) {
@@ -368,58 +379,7 @@ export default function SimulationEditor() {
     }
   };
 
-  // 🔥 FONCTION D'UPLOAD MANUEL (FALLBACK)
-  const uploadFileManually = async (file: File, userId: string) => {
-    console.log('🔄 Upload manuel pour fichier:', file.name);
-    
-    const { supabase } = await import('@/lib/supabase');
-    
-    // Vérification session
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Session expirée');
-    
-    // Génération nom de fichier
-    const timestamp = Date.now();
-    const uniqueId = Math.random().toString(36).substring(2, 9);
-    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'vtp';
-    const fileName = `${userId}/${timestamp}_${uniqueId}.${fileExt}`;
-    
-    console.log('📤 Upload vers simulation-files...');
-    
-    // Upload vers simulation-files (bucket public)
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('simulation-files')
-      .upload(fileName, file, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: 'application/octet-stream' // Type générique toujours accepté
-      });
-    
-    if (uploadError) {
-      console.error('❌ Erreur upload manuel:', uploadError);
-      throw new Error(`Upload échoué: ${uploadError.message}`);
-    }
-    
-    // URL publique
-    const { data: urlData } = supabase.storage
-      .from('simulation-files')
-      .getPublicUrl(fileName);
-    
-    if (!urlData?.publicUrl) {
-      throw new Error('Impossible de générer URL');
-    }
-    
-    return {
-      success: true,
-      fileUrl: urlData.publicUrl,
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type,
-      path: fileName
-    };
-  };
-
-  // Fonction de test (génération fichier VTP)
+  // 🔥 FONCTION DE TEST (génération fichier VTP)
   const generateTestVTP = () => {
     const testVTP = `<?xml version="1.0"?>
 <VTKFile type="PolyData" version="1.0" byte_order="LittleEndian">
@@ -606,7 +566,9 @@ export default function SimulationEditor() {
         <div className="flex flex-col items-center gap-2">
           <div className="flex items-center gap-2">
             <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Upload en cours... {uploadProgress}%</span>
+            <span>
+              {uploadPhase === 'uploading' ? 'Upload en cours...' : 'Finalisation serveur...'} {uploadProgress}%
+            </span>
           </div>
           <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
             <div 
@@ -616,7 +578,9 @@ export default function SimulationEditor() {
           </div>
           {uploadProgress > 0 && uploadProgress < 100 && (
             <p className="text-xs text-zinc-400 mt-1">
-              Patientez, cela peut prendre quelques secondes...
+              {uploadPhase === 'uploading' 
+                ? 'Transfert du fichier vers le serveur...'
+                : 'Traitement et validation par le serveur...'}
             </p>
           )}
         </div>
@@ -786,11 +750,17 @@ export default function SimulationEditor() {
 
                     {/* État upload */}
                     {uploadingFile && (
-                      <Alert className="bg-blue-900/20 border-blue-800">
+                      <Alert className={`${uploadPhase === 'finalizing' ? 'bg-yellow-900/20 border-yellow-800' : 'bg-blue-900/20 border-blue-800'}`}>
                         <Loader2 className="w-4 h-4 animate-spin" />
                         <AlertDescription className="ml-2">
-                          <div className="font-semibold">Upload en cours</div>
-                          <div className="text-sm">Ne quittez pas cette page...</div>
+                          <div className="font-semibold">
+                            {uploadPhase === 'uploading' ? 'Upload en cours' : 'Finalisation par le serveur'}
+                          </div>
+                          <div className="text-sm">
+                            {uploadPhase === 'uploading' 
+                              ? 'Transfert du fichier...'
+                              : 'Validation et traitement en cours...'}
+                          </div>
                         </AlertDescription>
                       </Alert>
                     )}
