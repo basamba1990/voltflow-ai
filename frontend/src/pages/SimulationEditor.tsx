@@ -1,12 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
-import { 
-  Save, Play, Download, Trash2, Thermometer, Loader2, 
-  AlertCircle, ChevronLeft, UploadCloud, Box, Settings,
-  Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy,
-  FileUp, CheckCircle, XCircle, TestTube
-} from 'lucide-react';
+import { Save, Play, Download, Trash2, Thermometer, Loader2, AlertCircle, ChevronLeft, UploadCloud, Box, Settings, Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy, FileUp, CheckCircle, XCircle, TestTube } from 'lucide-react';
 
 // Services et hooks
 import SimulationService from '@/services/simulation.service';
@@ -29,12 +24,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import VTKViewer from '@/components/Viewers/VTKViewer';
-import type { 
-  IndustrialField, 
-  IndustrialConfig,
-  IndustrialLegend,
-  UnitSystem 
-} from '@/components/Viewers/VTKViewer';
+import type { IndustrialField, IndustrialConfig, IndustrialLegend, UnitSystem } from '@/components/Viewers/VTKViewer';
 
 export default function SimulationEditor() {
   const [, setLocation] = useLocation();
@@ -45,16 +35,15 @@ export default function SimulationEditor() {
   
   const { data: materialsDataRaw } = useMaterials();
   const { user } = useAuth();
-  
   const materialsData = Array.isArray(materialsDataRaw) ? materialsDataRaw : [];
-  
+
   // État du formulaire
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     geometryType: 'complex' as 'simple' | 'complex',
-    geometryConfig: { 
-      file_url: '', 
+    geometryConfig: {
+      file_url: '',
       file_name: '',
       dimensions: { width: 100, height: 100, depth: 100 }
     },
@@ -89,6 +78,35 @@ export default function SimulationEditor() {
     element_id?: number;
   } | null>(null);
 
+  // 🔄 MÉCANISME DE RÉVEIL AUTOMATIQUE DU BACKEND
+  useEffect(() => {
+    const wakeBackend = async () => {
+      try {
+        // Ping silencieux pour réveiller le backend Render
+        console.log('🔔 Ping du backend pour pré-chauffage...');
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s max pour le ping
+        
+        await fetch('https://voltflow-ai.onrender.com/api/v1/health', {
+          method: 'GET',
+          signal: controller.signal,
+          headers: { 'Accept': 'application/json' }
+        });
+        
+        clearTimeout(timeoutId);
+        console.log('✅ Backend prêt (ou en cours de réveil)');
+      } catch (err) {
+        // Pas d'erreur affichée à l'utilisateur, c'est un ping silencieux
+        console.log('⚠️ Backend peut-être en cours de démarrage...');
+      }
+    };
+
+    // Délai court pour éviter de ralentir l'ouverture de l'éditeur
+    const wakeupTimer = setTimeout(wakeBackend, 1000);
+    
+    return () => clearTimeout(wakeupTimer);
+  }, []);
+
   // Initialisation des données
   useEffect(() => {
     if (id && simulation) {
@@ -99,8 +117,8 @@ export default function SimulationEditor() {
         name: simulation.name || '',
         description: simulation.description || '',
         geometryType: simulation.geometry_type || 'complex',
-        geometryConfig: gc || { 
-          file_url: '', 
+        geometryConfig: gc || {
+          file_url: '',
           file_name: '',
           dimensions: { width: 100, height: 100, depth: 100 }
         },
@@ -123,7 +141,6 @@ export default function SimulationEditor() {
 
     // Préparation des champs de données
     const fields: IndustrialField[] = [];
-    
     if (results.temperature_field && results.temperature_field.values) {
       const tempValues = results.temperature_field.values;
       const tempArray = Array.isArray(tempValues) ? tempValues : Object.values(tempValues);
@@ -195,7 +212,7 @@ export default function SimulationEditor() {
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
   // --------------------------------------------------------------------------
-  // GESTION DES FICHIERS – VERSION CORRIGÉE (MIME + RLS + FALLBACK)
+  // GESTION DES FICHIERS – VERSION OPTIMISÉE (Validation souple + Timeout)
   // --------------------------------------------------------------------------
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -204,31 +221,11 @@ export default function SimulationEditor() {
       return;
     }
 
-    // 1. VALIDATION MIME TYPES (côté client)
-    const allowedMimeTypes = [
-      'application/sla',
-      'model/stl',
-      'application/x-step',
-      'application/step',
-      'text/plain',
-      'application/xml',
-      'text/xml',
-      'model/obj',
-      'application/vnd.kitware.vtp',
-      'application/vnd.kitware.vti',
-      'application/octet-stream',
-      'application/vnd.kitware',
-      'application/x-iges',
-      'model/iges'
+    // 1. VALIDATION SOUPLE PAR EXTENSION (plus fiable que MIME)
+    const validExtensions = [
+      '.stl', '.step', '.stp', '.obj', '.iges', '.igs', 
+      '.vtp', '.vti', '.ply', '.vtk', '.vtu', '.xml'
     ];
-    
-    if (!allowedMimeTypes.includes(file.type) && file.type !== '') {
-      toast.error(`Type MIME non autorisé : ${file.type}. Utilisez les formats STL, STEP, OBJ, VTP, VTI, PLY, VTK.`);
-      return;
-    }
-
-    // 2. VALIDATION EXTENSION (double sécurité)
-    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.iges', '.igs', '.vtp', '.vti', '.ply', '.vtk'];
     const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
     
     if (!validExtensions.includes(fileExt)) {
@@ -236,7 +233,7 @@ export default function SimulationEditor() {
       return;
     }
 
-    // 3. VALIDATION TAILLE (max 50 MB)
+    // 2. VALIDATION TAILLE (max 50 MB)
     const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
       toast.error(`Fichier trop volumineux. Maximum : ${maxSize / (1024 * 1024)} MB`);
@@ -246,9 +243,15 @@ export default function SimulationEditor() {
     try {
       setUploadingFile(true);
       setUploadError(null);
-      console.log('📤 Début upload:', file.name, file.size, 'bytes', 'type:', file.type);
-      
-      // 4. APPEL DU SERVICE CORRIGÉ (upload direct + fallback Edge Function)
+      console.log('📤 Début upload:', file.name, file.size, 'bytes');
+
+      // 3. TIMEOUT DE 60 SECONDES POUR ÉVITER LE BLOQUAGE
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => {
+        controller.abort();
+        throw new Error('Timeout: Le serveur n\'a pas répondu dans les 60 secondes.');
+      }, 60000);
+
       console.log('⏳ Appel SimulationService.uploadGeometry...');
       const result = await SimulationService.uploadGeometry({
         file,
@@ -256,11 +259,11 @@ export default function SimulationEditor() {
         simulationId: id,
         geometryConfig: formData.geometryConfig
       });
+
+      clearTimeout(timeoutId);
       console.log('✅ Résultat reçu du service:', result);
-      
-      console.log('✅ Upload réussi:', result);
-      
-      // 5. MISE À JOUR DU FORMULAIRE
+
+      // 4. MISE À JOUR DU FORMULAIRE
       setFormData(prev => ({
         ...prev,
         geometryConfig: {
@@ -270,13 +273,13 @@ export default function SimulationEditor() {
           dimensions: prev.geometryConfig.dimensions,
           uploaded_at: new Date().toISOString(),
           file_size: file.size,
-          file_type: file.type
+          file_type: file.type,
         },
       }));
-      
+
       toast.success("✅ Fichier géométrique téléchargé avec succès");
-      
-      // 6. MISE À JOUR DE LA SIMULATION (si elle existe)
+
+      // 5. MISE À JOUR DE LA SIMULATION (si elle existe)
       if (id && simulation) {
         try {
           await SimulationService.updateSimulation(id, {
@@ -296,28 +299,26 @@ export default function SimulationEditor() {
           console.warn('⚠️ Échec mise à jour simulation:', updateError);
         }
       }
-      
+
     } catch (error: any) {
       console.error('❌ Upload échoué:', error);
-      
       let errorMessage = error.message || 'Erreur inconnue';
-      
+
       // Messages d'erreur explicites
-      if (error.message?.includes('row-level security') || error.message?.includes('RLS')) {
+      if (error.name === 'AbortError' || error.message?.includes('Timeout')) {
+        errorMessage = 'Le serveur met trop de temps à répondre. Vérifiez que le backend est en ligne.';
+      } else if (error.message?.includes('row-level security') || error.message?.includes('RLS')) {
         errorMessage = 'Erreur de permission. Vérifiez vos politiques RLS dans Supabase Storage.';
       } else if (error.message?.includes('network') || error.message?.includes('fetch')) {
         errorMessage = 'Erreur réseau. Vérifiez votre connexion.';
-      } else if (error.message?.includes('timeout')) {
-        errorMessage = 'Timeout. Le fichier est peut-être trop volumineux.';
       } else if (error.message?.includes('415')) {
         errorMessage = 'Type MIME refusé par le serveur. Vérifiez la configuration du bucket.';
       } else if (error.message?.includes('403')) {
         errorMessage = 'Accès interdit. Vérifiez vos politiques RLS (INSERT sur storage.objects).';
       }
-      
+
       setUploadError(errorMessage);
       toast.error(`❌ Échec upload: ${errorMessage}`);
-      
     } finally {
       setUploadingFile(false);
       if (e.target) e.target.value = '';
@@ -332,15 +333,15 @@ export default function SimulationEditor() {
     <Piece NumberOfPoints="8" NumberOfPolys="12">
       <Points>
         <DataArray type="Float32" NumberOfComponents="3" format="ascii">
-          0 0 0   1 0 0   1 1 0   0 1 0
-          0 0 1   1 0 1   1 1 1   0 1 1
+          0 0 0 1 0 0 1 1 0 0 1 0
+          0 0 1 1 0 1 1 1 1 0 1 1
         </DataArray>
       </Points>
       <Polys>
         <DataArray type="Int32" Name="connectivity" format="ascii">
-          0 1 2  0 2 3  4 5 6  4 6 7
-          0 1 5  0 5 4  1 2 6  1 6 5
-          2 3 7  2 7 6  3 0 4  3 4 7
+          0 1 2 0 2 3 4 5 6 4 6 7
+          0 1 5 0 5 4 1 2 6 1 6 5
+          2 3 7 2 7 6 3 0 4 3 4 7
         </DataArray>
         <DataArray type="Int32" Name="offsets" format="ascii">
           3 6 9 12 15 18 21 24 27 30 33 36
@@ -354,15 +355,12 @@ export default function SimulationEditor() {
     </Piece>
   </PolyData>
 </VTKFile>`;
-    
+
     const blob = new Blob([testVTP], { type: 'application/xml' });
     const file = new File([blob], 'test_cube.vtp', { type: 'application/xml' });
     
     // Simuler upload
-    const event = {
-      target: { files: [file] }
-    } as React.ChangeEvent<HTMLInputElement>;
-    
+    const event = { target: { files: [file] } } as React.ChangeEvent<HTMLInputElement>;
     handleFileUpload(event);
   };
 
@@ -375,7 +373,6 @@ export default function SimulationEditor() {
 
     try {
       setIsSaving(true);
-      
       const payload = {
         name: formData.name.trim(),
         description: formData.description.trim(),
@@ -416,12 +413,12 @@ export default function SimulationEditor() {
   // Export des résultats
   const handleExport = async (format: 'png' | 'pdf' | 'csv' | 'vtk') => {
     if (!results) return;
-    
+
     try {
       setIsExporting(true);
       let url = '';
       let filename = `simulation_${id}_${Date.now()}_${format}`;
-      
+
       switch (format) {
         case 'png':
           if (results.vtk_file_url) {
@@ -446,7 +443,7 @@ export default function SimulationEditor() {
           filename += '.vtk';
           break;
       }
-      
+
       if (url) {
         const a = document.createElement('a');
         a.href = url;
@@ -472,7 +469,6 @@ export default function SimulationEditor() {
     element_id?: number;
   }) => {
     setSelectedPoint(data);
-    
     const temp = data.field_values.temperature;
     if (temp !== undefined) {
       toast.info(`📌 Température sélectionnée: ${temp.toFixed(1)}°C`, {
@@ -485,7 +481,6 @@ export default function SimulationEditor() {
   // Copie des données
   const copySelectedPointData = () => {
     if (!selectedPoint) return;
-    
     const text = JSON.stringify(selectedPoint, null, 2);
     navigator.clipboard.writeText(text);
     toast.success('📋 Données copiées dans le presse-papier');
@@ -510,20 +505,15 @@ export default function SimulationEditor() {
     return fileName;
   };
 
+  // Rendu JSX (inchangé dans sa structure, seule la logique a été modifiée)
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
         {/* En-tête */}
         <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setLocation('/dashboard')}
-              className="hover:bg-zinc-800"
-            >
-              <ChevronLeft className="w-4 h-4 mr-1" />
-              Retour
+            <Button variant="ghost" size="sm" onClick={() => setLocation('/dashboard')} className="hover:bg-zinc-800">
+              <ChevronLeft className="w-4 h-4 mr-1" /> Retour
             </Button>
             <div>
               <h1 className="text-xl md:text-2xl font-bold">
@@ -533,17 +523,13 @@ export default function SimulationEditor() {
                 <div className="flex items-center gap-2 mt-1">
                   <SimulationStatus status={simulation.status} />
                   <span className="text-sm text-zinc-400">
-                    {simulation.status === 'running' && progress !== undefined
-                      ? `${progress}%`
-                      : simulation.created_at
-                      ? new Date(simulation.created_at).toLocaleDateString()
-                      : ''}
+                    {simulation.status === 'running' && progress !== undefined ? `${progress}%` : 
+                     simulation.created_at ? new Date(simulation.created_at).toLocaleDateString() : ''}
                   </span>
                 </div>
               )}
             </div>
           </div>
-          
           <div className="flex flex-wrap gap-2">
             <Button
               variant="outline"
@@ -558,7 +544,6 @@ export default function SimulationEditor() {
               )}
               Sauvegarder
             </Button>
-            
             {id && (
               <Button
                 onClick={() => startSimulation()}
@@ -573,7 +558,6 @@ export default function SimulationEditor() {
                 {isRunning ? 'En cours...' : 'Lancer'}
               </Button>
             )}
-            
             {results && (
               <Button
                 variant="outline"
@@ -624,7 +608,6 @@ export default function SimulationEditor() {
                     className="bg-zinc-800/50 border-zinc-700 focus:border-blue-500"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="description">Description</Label>
                   <Textarea
@@ -635,7 +618,6 @@ export default function SimulationEditor() {
                     className="bg-zinc-800/50 border-zinc-700 min-h-[80px]"
                   />
                 </div>
-
                 <div className="space-y-2">
                   <Label>Géométrie</Label>
                   <div className="space-y-3">
@@ -646,14 +628,9 @@ export default function SimulationEditor() {
                           onChange={handleFileUpload}
                           className="hidden"
                           id="geo-upload"
-                          accept=".stl,.step,.stp,.obj,.vtp,.vti,.ply,.vtk,.iges,.igs"
+                          accept=".stl,.step,.stp,.obj,.vtp,.vti,.ply,.vtk,.iges,.igs,.vtu,.xml"
                         />
-                        <Button
-                          asChild
-                          variant="secondary"
-                          disabled={uploadingFile}
-                          className="flex-1"
-                        >
+                        <Button asChild variant="secondary" disabled={uploadingFile} className="flex-1">
                           <label htmlFor="geo-upload" className="cursor-pointer flex items-center justify-center gap-2">
                             {uploadingFile ? (
                               <Loader2 className="w-4 h-4 animate-spin" />
@@ -663,7 +640,6 @@ export default function SimulationEditor() {
                             {uploadingFile ? 'Upload en cours...' : 'Choisir un fichier'}
                           </label>
                         </Button>
-                        
                         <Button
                           variant="outline"
                           onClick={generateTestVTP}
@@ -673,12 +649,10 @@ export default function SimulationEditor() {
                           <TestTube className="w-4 h-4" />
                         </Button>
                       </div>
-                      
                       <div className="text-xs text-zinc-400">
                         Formats supportés: STL, STEP, OBJ, VTP, VTI, PLY, VTK, IGES (max 50MB)
                       </div>
                     </div>
-                    
                     {formData.geometryConfig.file_name && (
                       <div className="p-3 bg-green-900/20 rounded border border-green-800/50">
                         <div className="flex items-center justify-between">
@@ -705,7 +679,6 @@ export default function SimulationEditor() {
                         </div>
                       </div>
                     )}
-                    
                     {uploadError && (
                       <Alert variant="destructive" className="bg-red-900/20 border-red-800">
                         <AlertCircle className="w-4 h-4" />
@@ -713,40 +686,28 @@ export default function SimulationEditor() {
                           <div className="font-semibold mb-1">Erreur d'upload</div>
                           <div className="mb-2 text-sm">{uploadError}</div>
                           <div className="text-xs text-red-300">
-                            Vérifiez: 
-                            1. Votre connexion internet
-                            2. Les politiques RLS dans Supabase
-                            3. Que le fichier est valide
+                            Vérifiez: 1. Votre connexion internet 2. Les politiques RLS dans Supabase 3. Que le fichier est valide
                           </div>
                         </AlertDescription>
                       </Alert>
                     )}
                   </div>
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="material">Matériau</Label>
-                  <Select
-                    value={formData.materialId}
-                    onValueChange={v => setFormData({...formData, materialId: v})}
-                  >
+                  <Select value={formData.materialId} onValueChange={v => setFormData({...formData, materialId: v})}>
                     <SelectTrigger className="bg-zinc-800/50 border-zinc-700">
                       <SelectValue placeholder="Sélectionner un matériau" />
                     </SelectTrigger>
                     <SelectContent className="bg-zinc-900 border-zinc-700 max-h-[200px]">
                       {materialsData.map(material => (
-                        <SelectItem
-                          key={material.id}
-                          value={material.id}
-                          className="hover:bg-zinc-800 focus:bg-zinc-800"
-                        >
+                        <SelectItem key={material.id} value={material.id} className="hover:bg-zinc-800 focus:bg-zinc-800">
                           {material.name}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
-
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-2">
                     <Label htmlFor="initialTemp">Temp. initiale (°C)</Label>
@@ -756,9 +717,7 @@ export default function SimulationEditor() {
                       value={formData.initialTemp}
                       onChange={e => setFormData({...formData, initialTemp: e.target.value})}
                       className="bg-zinc-800/50 border-zinc-700"
-                      min="0"
-                      max="2000"
-                      step="1"
+                      min="0" max="2000" step="1"
                     />
                   </div>
                   <div className="space-y-2">
@@ -767,21 +726,15 @@ export default function SimulationEditor() {
                       id="ambientTemp"
                       type="number"
                       value={formData.ambientTemp}
-                      onChange={e => setData({...formData, ambientTemp: e.target.value})}
+                      onChange={e => setFormData({...formData, ambientTemp: e.target.value})}
                       className="bg-zinc-800/50 border-zinc-700"
-                      min="-100"
-                      max="100"
-                      step="1"
+                      min="-100" max="100" step="1"
                     />
                   </div>
                 </div>
-
                 <div className="space-y-2">
                   <Label htmlFor="meshDensity">Densité de maillage</Label>
-                  <Select
-                    value={formData.meshDensity}
-                    onValueChange={v => setFormData({...formData, meshDensity: v as any})}
-                  >
+                  <Select value={formData.meshDensity} onValueChange={v => setFormData({...formData, meshDensity: v as any})}>
                     <SelectTrigger className="bg-zinc-800/50 border-zinc-700">
                       <SelectValue />
                     </SelectTrigger>
@@ -792,13 +745,9 @@ export default function SimulationEditor() {
                     </SelectContent>
                   </Select>
                 </div>
-                
                 <div className="space-y-2">
                   <Label htmlFor="solverType">Méthode de calcul</Label>
-                  <Select
-                    value={formData.solverType}
-                    onValueChange={v => setFormData({...formData, solverType: v as any})}
-                  >
+                  <Select value={formData.solverType} onValueChange={v => setFormData({...formData, solverType: v as any})}>
                     <SelectTrigger className="bg-zinc-800/50 border-zinc-700">
                       <SelectValue />
                     </SelectTrigger>
@@ -821,12 +770,7 @@ export default function SimulationEditor() {
                       <Thermometer className="w-4 h-4" />
                       Point sélectionné
                     </span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={copySelectedPointData}
-                      className="h-6 px-2"
-                    >
+                    <Button variant="ghost" size="sm" onClick={copySelectedPointData} className="h-6 px-2">
                       <Copy className="w-3 h-3" />
                     </Button>
                   </CardTitle>
@@ -853,18 +797,15 @@ export default function SimulationEditor() {
                         </div>
                       </div>
                     </div>
-                    
                     <Separator className="my-2" />
-                    
                     {Object.entries(selectedPoint.field_values).map(([key, value]) => (
                       <div key={key} className="flex justify-between items-center">
                         <span className="text-zinc-400">{key}:</span>
                         <div className="flex items-center gap-2">
                           <span className={`font-medium ${
-                            key === 'temperature' 
-                              ? value > 500 ? 'text-red-500' 
-                              : value > 200 ? 'text-orange-500' 
-                              : 'text-green-500'
+                            key === 'temperature' ?
+                              value > 500 ? 'text-red-500' :
+                              value > 200 ? 'text-orange-500' : 'text-green-500'
                               : ''
                           }`}>
                             {value.toFixed(1)}°C
@@ -877,7 +818,6 @@ export default function SimulationEditor() {
                         </div>
                       </div>
                     ))}
-                    
                     {selectedPoint.element_id !== undefined && (
                       <div className="text-xs text-zinc-500 mt-2">
                         ID élément: {selectedPoint.element_id}
@@ -896,12 +836,7 @@ export default function SimulationEditor() {
               <CardContent className="p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex flex-wrap items-center gap-3">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={toggleFullscreen}
-                      className="flex items-center gap-2"
-                    >
+                    <Button variant="outline" size="sm" onClick={toggleFullscreen} className="flex items-center gap-2">
                       {viewState.isFullscreen ? (
                         <>
                           <Minimize2 className="w-4 h-4" />
@@ -914,36 +849,23 @@ export default function SimulationEditor() {
                         </>
                       )}
                     </Button>
-                    
                     <div className="flex items-center gap-2">
                       <Switch
                         checked={viewState.showGrid}
-                        onCheckedChange={checked => 
-                          setViewState(prev => ({ ...prev, showGrid: checked }))
-                        }
+                        onCheckedChange={checked => setViewState(prev => ({ ...prev, showGrid: checked }))}
                       />
                       <Label className="text-sm cursor-pointer">Grille</Label>
                     </div>
-                    
                     <div className="flex items-center gap-2">
                       <Switch
                         checked={viewState.showAxes}
-                        onCheckedChange={checked => 
-                          setViewState(prev => ({ ...prev, showAxes: checked }))
-                        }
+                        onCheckedChange={checked => setViewState(prev => ({ ...prev, showAxes: checked }))}
                       />
                       <Label className="text-sm cursor-pointer">Axes</Label>
                     </div>
                   </div>
-                  
                   <div className="flex items-center gap-3">
-                    <Select
-                      value={viewState.viewMode}
-                      onValueChange={v => setViewState(prev => ({ 
-                        ...prev, 
-                        viewMode: v as any 
-                      }))}
-                    >
+                    <Select value={viewState.viewMode} onValueChange={v => setViewState(prev => ({ ...prev, viewMode: v as any }))}>
                       <SelectTrigger className="w-[140px] bg-zinc-800/50 border-zinc-700">
                         <SelectValue placeholder="Mode" />
                       </SelectTrigger>
@@ -953,14 +875,7 @@ export default function SimulationEditor() {
                         <SelectItem value="point_cloud">Points</SelectItem>
                       </SelectContent>
                     </Select>
-                    
-                    <Select
-                      value={viewState.colorMap}
-                      onValueChange={v => setViewState(prev => ({ 
-                        ...prev, 
-                        colorMap: v as any 
-                      }))}
-                    >
+                    <Select value={viewState.colorMap} onValueChange={v => setViewState(prev => ({ ...prev, colorMap: v as any }))}>
                       <SelectTrigger className="w-[140px] bg-zinc-800/50 border-zinc-700">
                         <SelectValue placeholder="Palette" />
                       </SelectTrigger>
@@ -972,7 +887,6 @@ export default function SimulationEditor() {
                     </Select>
                   </div>
                 </div>
-                
                 <div className="mt-4">
                   <div className="flex items-center justify-between mb-2">
                     <Label className="text-sm cursor-pointer">Opacité</Label>
@@ -980,12 +894,8 @@ export default function SimulationEditor() {
                   </div>
                   <Slider
                     value={[viewState.opacity]}
-                    onValueChange={([value]) => 
-                      setViewState(prev => ({ ...prev, opacity: value }))
-                    }
-                    min={0.1}
-                    max={1}
-                    step={0.1}
+                    onValueChange={([value]) => setViewState(prev => ({ ...prev, opacity: value }))}
+                    min={0.1} max={1} step={0.1}
                     className="w-full"
                   />
                 </div>
@@ -1056,7 +966,7 @@ export default function SimulationEditor() {
                       {progress !== undefined && (
                         <div className="w-64 mx-auto">
                           <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                            <div 
+                            <div
                               className="h-full bg-gradient-to-r from-blue-500 to-cyan-500 transition-all duration-300"
                               style={{ width: `${progress}%` }}
                             />
@@ -1077,9 +987,8 @@ export default function SimulationEditor() {
                       {id ? 'Simulation prête' : 'Nouvelle simulation'}
                     </div>
                     <div className="text-sm mb-6 max-w-md">
-                      {id 
-                        ? 'Lancez la simulation pour générer les résultats et visualiser le modèle 3D.'
-                        : 'Configurez et sauvegardez votre simulation pour commencer.'}
+                      {id ? 'Lancez la simulation pour générer les résultats et visualiser le modèle 3D.' : 
+                           'Configurez et sauvegardez votre simulation pour commencer.'}
                     </div>
                     <div className="flex gap-3">
                       {id ? (
@@ -1130,9 +1039,7 @@ export default function SimulationEditor() {
                               <div className="text-3xl font-bold text-red-500">
                                 {results.max_temperature?.toFixed(1)}°C
                               </div>
-                              <div className="text-xs text-zinc-500 mt-1">
-                                Point le plus chaud
-                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">Point le plus chaud</div>
                             </div>
                             <Separator />
                             <div>
@@ -1140,14 +1047,11 @@ export default function SimulationEditor() {
                               <div className="text-xl font-medium text-blue-500">
                                 {results.min_temperature?.toFixed(1)}°C
                               </div>
-                              <div className="text-xs text-zinc-500 mt-1">
-                                Point le plus froid
-                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">Point le plus froid</div>
                             </div>
                           </div>
                         </CardContent>
                       </Card>
-
                       <Card className="bg-zinc-900/50 border-zinc-800">
                         <CardContent className="pt-6">
                           <div className="space-y-4">
@@ -1155,14 +1059,11 @@ export default function SimulationEditor() {
                               <div className="text-sm text-zinc-400 mb-1">Fidélité de Simulation</div>
                               <div className={`text-3xl font-bold ${
                                 ((1 - (results.uncertainty_score || 0)) * 100) > 95 ? 'text-green-500' :
-                                ((1 - (results.uncertainty_score || 0)) * 100) > 80 ? 'text-yellow-500' :
-                                'text-red-500'
+                                ((1 - (results.uncertainty_score || 0)) * 100) > 80 ? 'text-yellow-500' : 'text-red-500'
                               }`}>
                                 {((1 - (results.uncertainty_score || 0)) * 100).toFixed(1)}%
                               </div>
-                              <div className="text-xs text-zinc-500 mt-1">
-                                Précision du modèle
-                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">Précision du modèle</div>
                             </div>
                             <Separator />
                             <div>
@@ -1170,14 +1071,11 @@ export default function SimulationEditor() {
                               <div className="text-xl font-medium text-yellow-500">
                                 {(results.uncertainty_score * 100)?.toFixed(1)}%
                               </div>
-                              <div className="text-xs text-zinc-500 mt-1">
-                                Marge d'erreur
-                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">Marge d'erreur</div>
                             </div>
                           </div>
                         </CardContent>
                       </Card>
-
                       <Card className="bg-zinc-900/50 border-zinc-800">
                         <CardContent className="pt-6">
                           <div className="space-y-4">
@@ -1186,9 +1084,7 @@ export default function SimulationEditor() {
                               <div className="text-3xl font-bold text-cyan-500">
                                 {results.computation_time?.toFixed(1)}s
                               </div>
-                              <div className="text-xs text-zinc-500 mt-1">
-                                Durée d'exécution
-                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">Durée d'exécution</div>
                             </div>
                             <Separator />
                             <div>
@@ -1196,9 +1092,7 @@ export default function SimulationEditor() {
                               <div className="text-xl font-medium text-purple-500">
                                 {results.mesh_points?.toLocaleString() || 'N/A'}
                               </div>
-                              <div className="text-xs text-zinc-500 mt-1">
-                                Résolution du maillage
-                              </div>
+                              <div className="text-xs text-zinc-500 mt-1">Résolution du maillage</div>
                             </div>
                           </div>
                         </CardContent>
@@ -1300,9 +1194,7 @@ export default function SimulationEditor() {
                             <div className="flex items-center gap-2 mt-1">
                               <SimulationStatus status={simulation.status} />
                               <span className="text-sm">
-                                {simulation.status === 'running' && progress !== undefined
-                                  ? `${progress}%`
-                                  : ''}
+                                {simulation.status === 'running' && progress !== undefined ? `${progress}%` : ''}
                               </span>
                             </div>
                           </div>
@@ -1331,9 +1223,7 @@ export default function SimulationEditor() {
                             </div>
                           </div>
                         </div>
-                        
                         <Separator />
-                        
                         <div>
                           <div className="text-sm text-zinc-400 mb-2">Configuration complète</div>
                           <div className="bg-zinc-900 p-4 rounded-lg text-sm overflow-auto max-h-[300px]">
@@ -1342,7 +1232,6 @@ export default function SimulationEditor() {
                             </pre>
                           </div>
                         </div>
-                        
                         {simulation.error_message && (
                           <>
                             <Separator />
