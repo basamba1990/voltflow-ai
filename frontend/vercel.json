@@ -1,7 +1,8 @@
 {
+  "version": 2,
   "rewrites": [
     {
-      "source": "/((?!assets/|favicon.svg).* )",
+      "source": "/(.*)",
       "destination": "/index.html"
     }
   ]
