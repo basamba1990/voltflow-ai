@@ -4,14 +4,11 @@ import type { Database } from './database.types';
 // -----------------------------------------------------------------------------
 // 1. CONFIGURATION STRICTE
 // -----------------------------------------------------------------------------
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-// 🔥 CORRECTION CRITIQUE : Ajout du service role key pour fallback
-const SUPABASE_SERVICE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY;
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || '';
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
 
 if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-  throw new Error('❌ Variables d\'environnement Supabase manquantes');
+  console.error('❌ Variables d\'environnement Supabase manquantes.');
 }
 
 // -----------------------------------------------------------------------------
@@ -25,7 +22,7 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
     storageKey: 'voltflow-ai-auth',
     storage: typeof window !== 'undefined' ? localStorage : undefined,
     flowType: 'pkce', // 🔥 IMPORTANT pour les applications web modernes
-    debug: process.env.NODE_ENV === 'development' // Logs en dev
+    debug: false
   },
   global: {
     headers: {
@@ -46,16 +43,9 @@ export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_ANON_KEY, 
 });
 
 // -----------------------------------------------------------------------------
-// 3. CLIENT SERVICE ROLE (pour fallback côté serveur)
+// 3. CLIENT SERVICE ROLE (Désactivé côté client pour sécurité)
 // -----------------------------------------------------------------------------
-export const serviceRoleSupabase = SUPABASE_SERVICE_KEY
-  ? createClient<Database>(SUPABASE_URL, SUPABASE_SERVICE_KEY, {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false
-      }
-    })
-  : null;
+export const serviceRoleSupabase = null;
 
 // -----------------------------------------------------------------------------
 // 4. UTILITAIRES D'AUTHENTIFICATION AMÉLIORÉS
