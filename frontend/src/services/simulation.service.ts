@@ -99,7 +99,6 @@ const validateFile = (file: File): void => {
 };
 
 // 🔥 CORRECTION CRITIQUE: Forcer application/octet-stream pour tous les fichiers
-// Cela garantit que Supabase accepte le fichier quel que soit son format CAO
 const getSafeContentType = (fileName: string): string => {
   console.log('🔒 Forçage Type MIME universel pour:', fileName, '→ application/octet-stream');
   return 'application/octet-stream';
@@ -124,8 +123,8 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): 
   });
 };
 
-// Vérifier la session utilisateur
-const ensureSession = async (maxRetries = 2): Promise<any> => {
+// Vérifier la session utilisateur avec réessais
+const ensureSession = async (maxRetries = 3): Promise<any> => {
   for (let i = 0; i <= maxRetries; i++) {
     try {
       const { data: { session }, error } = await supabase.auth.getSession();
@@ -133,14 +132,14 @@ const ensureSession = async (maxRetries = 2): Promise<any> => {
       if (error) {
         console.error(`❌ Erreur session (tentative ${i + 1}/${maxRetries + 1}):`, error);
         if (i === maxRetries) throw error;
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
         continue;
       }
       
       if (!session?.user) {
         console.log(`⚠️ Session non trouvée (tentative ${i + 1}/${maxRetries + 1})`);
         if (i === maxRetries) throw new Error('Session expirée. Veuillez vous reconnecter.');
-        await new Promise(resolve => setTimeout(resolve, 1000));
+        await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
         continue;
       }
       
@@ -152,29 +151,6 @@ const ensureSession = async (maxRetries = 2): Promise<any> => {
   }
   
   throw new Error('Impossible de vérifier la session');
-};
-
-// Vérifier si une URL est accessible
-const waitForUrlAccessibility = async (url: string, maxRetries = 3): Promise<boolean> => {
-  for (let i = 0; i < maxRetries; i++) {
-    try {
-      console.log(`🔍 Vérification URL (tentative ${i + 1}/${maxRetries}):`, url.substring(0, 100));
-      
-      const response = await fetch(url, { method: 'HEAD' });
-      if (response.ok) {
-        console.log(`✅ URL accessible après ${i + 1} tentative(s)`);
-        return true;
-      }
-    } catch (error) {
-      console.warn(`⚠️ URL non accessible (tentative ${i + 1}):`, error.message);
-    }
-    
-    // Attente exponentielle avant la prochaine tentative
-    await new Promise(resolve => setTimeout(resolve, 500 * (i + 1)));
-  }
-  
-  console.warn('❌ URL non accessible après plusieurs tentatives');
-  return false;
 };
 
 // -----------------------------------------------------------------------------
@@ -344,105 +320,90 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
   }
 };
 
-// 🔥 FONCTION PRINCIPALE D'UPLOAD - VERSION CORRIGÉE
-export const uploadGeometry = async (params: {
-  file: File;
-  userId: string;
-  simulationId?: string;
-  geometryConfig?: any;
-}): Promise<UploadGeometryResponse> => {
+// 🔥 FONCTION PRINCIPALE D'UPLOAD - VERSION SIMPLIFIÉE ET CORRIGÉE
+export const uploadGeometry = async (
+  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
+): Promise<UploadGeometryResponse> => {
+  console.log('🚀 ========== DÉBUT UPLOAD GÉOMÉTRIE ==========');
+  console.log('📁 Fichier:', params.file.name, `(${(params.file.size / 1024 / 1024).toFixed(2)}MB)`);
+  
   try {
-    console.log('🚀 ========== DÉBUT UPLOAD GÉOMÉTRIE ==========');
-    console.log('📁 Fichier:', params.file.name, `(${(params.file.size / 1024 / 1024).toFixed(2)}MB)`);
-    
+    // 1. Validation
     validateFile(params.file);
 
-    const uploadPromise = (async () => {
-      // Stratégie d'upload: Essayer geometries d'abord, puis simulation-files
-      try {
-        console.log('🔄 Tentative upload geometries avec URL signée...');
-        return await uploadToGeometries({
-          file: params.file,
-          userId: params.userId,
-          simulationId: params.simulationId
-        });
-      } catch (error1: any) {
-        console.log('❌ Upload geometries échoué:', error1.message);
-        
-        // Fallback vers simulation-files avec URL signée
-        try {
-          console.log('🔄 Tentative upload simulation-files avec URL signée...');
-          return await uploadToSimulationFiles({
-            file: params.file,
-            userId: params.userId,
-            simulationId: params.simulationId
-          });
-        } catch (error2: any) {
-          console.log('❌ Upload simulation-files échoué:', error2.message);
-          
-          // Dernier recours: Edge Function
-          console.log('🔄 Dernier recours: Edge Function...');
-          return await uploadGeometryViaEdgeFunction(params);
-        }
-      }
-    })();
+    // 2. Vérification session
+    const session = await ensureSession();
+    console.log('✅ Session vérifiée, utilisateur:', session.user.id);
 
-    const result = await withTimeout(
-      uploadPromise,
-      60000,
-      '❌ UPLOAD TIMEOUT: L\'opération a pris plus de 60 secondes.'
-    );
+    // 3. Upload DIRECT vers simulation-files (bucket public)
+    // 🔥 STRATÉGIE SIMPLIFIÉE: Uniquement simulation-files public
+    const result = await uploadToSimulationFilesSimple({
+      file: params.file,
+      userId: params.userId,
+      simulationId: params.simulationId,
+      session: session
+    });
     
     console.log('✅ ========== UPLOAD RÉUSSI ==========');
     console.log('📎 URL:', result.fileUrl?.substring(0, 100) + '...');
-    
-    // Vérifier que l'URL est accessible avant de retourner
-    console.log('🔍 Vérification accessibilité URL...');
-    await waitForUrlAccessibility(result.fileUrl);
     
     return result;
     
   } catch (error: any) {
     console.error('❌ ========== UPLOAD ÉCHOUÉ ==========');
-    console.error('💥 Erreur:', error.message);
+    console.error('💥 Erreur détaillée:', {
+      message: error.message,
+      code: error.code,
+      details: error.details,
+      hint: error.hint
+    });
     
     // Messages d'erreur spécifiques
     let userMessage = error.message;
-    if (error.message?.includes('timeout')) {
-      userMessage = 'Le serveur n\'a pas confirmé l\'upload. Vérifiez vos permissions ou réessayez.';
-    } else if (error.message?.includes('permission') || error.message?.includes('403')) {
-      userMessage = 'Permissions insuffisantes. Vérifiez votre compte.';
-    } else if (error.message?.includes('storage')) {
-      userMessage = 'Erreur de stockage. Contactez le support.';
+    
+    if (error.message?.includes('415') || error.message?.includes('MIME')) {
+      userMessage = "Type de fichier non supporté par le serveur. Contactez l'admin pour autoriser ce format.";
+    } else if (error.message?.includes('403') || error.message?.includes('permission')) {
+      userMessage = "Erreur de permissions Supabase. Vérifiez les politiques RLS.";
+    } else if (error.message?.includes('timeout')) {
+      userMessage = "Le serveur n'a pas confirmé l'upload. Vérifiez vos permissions ou réessayez.";
+    } else if (error.message?.includes('storage') || error.message?.includes('bucket')) {
+      userMessage = "Erreur de stockage. Le bucket 'simulation-files' n'est peut-être pas accessible.";
     }
     
     throw new Error(userMessage);
   }
 };
 
-// Upload vers simulation-files avec URL signée
-const uploadToSimulationFiles = async (
-  params: { file: File; userId: string; simulationId?: string }
+// 🔥 UPLOAD SIMPLIFIÉ vers simulation-files (public)
+const uploadToSimulationFilesSimple = async (
+  params: { file: File; userId: string; simulationId?: string; session: any }
 ): Promise<UploadGeometryResponse> => {
-  const session = await ensureSession();
+  const { file, userId, simulationId, session } = params;
   
-  // Génération nom de fichier
+  // Vérifier que l'ID utilisateur correspond
+  if (session.user.id !== userId) {
+    console.warn('⚠️ ID utilisateur mismatch:', session.user.id, 'vs', userId);
+  }
+  
+  // 🔥 GÉNÉRATION NOM DE FICHIER SIMPLE
   const timestamp = Date.now();
   const uniqueId = Math.random().toString(36).substring(2, 9);
-  const fileExt = params.file.name.split('.').pop()?.toLowerCase() || 'vtp';
-  const fileName = `geometries/${params.userId}/${timestamp}_${uniqueId}.${fileExt}`;
+  const fileExt = file.name.split('.').pop()?.toLowerCase() || 'vtp';
+  const fileName = `${userId}/${timestamp}_${uniqueId}.${fileExt}`;
   
   console.log('📤 Upload simulation-files - Nom fichier:', fileName);
   
-  // 🔥 CORRECTION: Forcer application/octet-stream
+  // 🔥 FORCER application/octet-stream
   const contentType = 'application/octet-stream';
-  console.log('📄 Type MIME forcé:', contentType);
+  console.log('📄 Content-Type:', contentType);
   
-  // Upload vers simulation-files
+  // 🔥 UPLOAD DIRECT (30s timeout)
   console.log('⏳ Upload vers Supabase Storage (bucket: simulation-files)...');
+  
   const uploadPromise = supabase.storage
     .from('simulation-files')
-    .upload(fileName, params.file, {
+    .upload(fileName, file, {
       cacheControl: '3600',
       upsert: false,
       contentType: contentType
@@ -450,138 +411,51 @@ const uploadToSimulationFiles = async (
   
   const { data: uploadData, error: uploadError } = await withTimeout(
     uploadPromise,
-    30000,
+    30000, // 30 secondes
     '❌ Supabase Storage upload timeout (30s)'
   );
   
   if (uploadError) {
-    console.error('❌ Erreur Supabase Storage simulation-files:', uploadError);
-    
-    if (uploadError.message?.includes('415')) {
-      console.error('🎭 ERREUR 415: Type MIME non supporté dans simulation-files');
-      throw new Error('Type de fichier non supporté. Essayez de convertir en STL.');
-    }
-    
-    throw uploadError;
-  }
-  
-  console.log('✅ Fichier uploadé, génération URL signée...');
-  
-  // URL signée (plus fiable que l'URL publique)
-  const signedUrlPromise = supabase.storage
-    .from('simulation-files')
-    .createSignedUrl(fileName, 3600); // 1 heure
-  
-  const { data: signedData, error: signedError } = await withTimeout(
-    signedUrlPromise,
-    10000,
-    '❌ Génération URL signée timeout'
-  );
-  
-  if (signedError) {
-    console.error('❌ Erreur génération URL signée:', signedError);
-    throw new Error(`Impossible de générer URL sécurisée: ${signedError.message}`);
-  }
-  
-  if (!signedData?.signedUrl) {
-    throw new Error('Impossible de générer URL signée');
-  }
-  
-  console.log('✅ URL signée générée');
-  
-  // Mise à jour simulation
-  await updateSimulationWithFileUrl(params.simulationId, params.userId, signedData.signedUrl, fileName, params.file);
-  
-  return {
-    success: true,
-    fileUrl: signedData.signedUrl,
-    fileName: params.file.name,
-    fileSize: params.file.size,
-    fileType: contentType,
-    path: fileName
-  };
-};
-
-// Upload vers geometries avec URL signée
-const uploadToGeometries = async (
-  params: { file: File; userId: string; simulationId?: string }
-): Promise<UploadGeometryResponse> => {
-  const session = await ensureSession();
-  
-  const timestamp = Date.now();
-  const uniqueId = Math.random().toString(36).substring(2, 9);
-  const fileExt = params.file.name.split('.').pop()?.toLowerCase() || 'vtp';
-  const fileName = `${params.userId}/${timestamp}_${uniqueId}.${fileExt}`;
-  
-  console.log('📤 Upload geometries - Nom fichier:', fileName);
-  
-  // 🔥 CORRECTION: Forcer application/octet-stream
-  const contentType = 'application/octet-stream';
-  
-  // Upload vers geometries (bucket avec RLS)
-  console.log('⏳ Upload vers Supabase Storage (bucket: geometries)...');
-  const uploadPromise = supabase.storage
-    .from('geometries')
-    .upload(fileName, params.file, {
-      cacheControl: '3600',
-      upsert: false,
-      contentType: contentType
+    console.error('❌ Erreur upload simulation-files:', {
+      message: uploadError.message,
+      code: uploadError.code,
+      statusCode: uploadError.statusCode
     });
-  
-  const { data: uploadData, error: uploadError } = await withTimeout(
-    uploadPromise,
-    30000,
-    '❌ Supabase Storage upload timeout (30s)'
-  );
-  
-  if (uploadError) {
-    console.error('❌ Erreur Supabase Storage geometries:', uploadError);
     
-    // Messages d'erreur spécifiques
-    if (uploadError.message?.includes('row-level security') || uploadError.message?.includes('403')) {
-      console.error('🔒 ERREUR RLS: Vérifiez vos politiques RLS dans Supabase Dashboard');
-      throw new Error('Permissions insuffisantes. Contactez l\'administrateur.');
+    // 🔥 ERREUR 415: Type MIME non supporté
+    if (uploadError.message?.includes('415') || uploadError.statusCode === 415) {
+      throw new Error('Type de fichier non supporté. Essayez de convertir en STL ou VTK.');
     }
     
-    if (uploadError.message?.includes('415')) {
-      console.error('🎭 ERREUR 415: Type MIME non supporté dans geometries');
-      throw new Error('Type de fichier non supporté. Essayez un format différent.');
+    // 🔥 ERREUR 403: Permissions
+    if (uploadError.message?.includes('403') || uploadError.statusCode === 403) {
+      throw new Error('Permissions insuffisantes. Vérifiez les politiques du bucket simulation-files.');
     }
     
     throw uploadError;
   }
   
-  console.log('✅ Fichier uploadé, génération URL signée...');
+  console.log('✅ Fichier uploadé, génération URL publique...');
   
-  // URL signée (pour bucket avec RLS)
-  const signedUrlPromise = supabase.storage
-    .from('geometries')
-    .createSignedUrl(fileName, 31536000); // 1 an en secondes
+  // 🔥 URL PUBLIQUE (bucket simulation-files est public)
+  const { data: publicUrlData } = supabase.storage
+    .from('simulation-files')
+    .getPublicUrl(fileName);
   
-  const { data: signedData, error: signedError } = await withTimeout(
-    signedUrlPromise,
-    10000,
-    '❌ Génération URL signée timeout'
-  );
-  
-  if (signedError) {
-    throw new Error(`Erreur génération URL signée: ${signedError.message}`);
+  if (!publicUrlData?.publicUrl) {
+    throw new Error('Impossible de générer URL publique pour le fichier');
   }
   
-  if (!signedData?.signedUrl) {
-    throw new Error('Impossible de générer URL signée');
-  }
+  console.log('✅ URL publique générée:', publicUrlData.publicUrl.substring(0, 100) + '...');
   
-  console.log('✅ URL signée générée');
-  
-  // Mise à jour simulation
-  await updateSimulationWithFileUrl(params.simulationId, params.userId, signedData.signedUrl, fileName, params.file);
+  // 🔥 MISE À JOUR SIMULATION
+  await updateSimulationWithFileUrl(simulationId, userId, publicUrlData.publicUrl, fileName, file);
   
   return {
     success: true,
-    fileUrl: signedData.signedUrl,
-    fileName: params.file.name,
-    fileSize: params.file.size,
+    fileUrl: publicUrlData.publicUrl,
+    fileName: file.name,
+    fileSize: file.size,
     fileType: contentType,
     path: fileName
   };
@@ -603,82 +477,33 @@ const updateSimulationWithFileUrl = async (
   try {
     console.log('🔄 Mise à jour simulation:', simulationId);
     
-    await supabase
+    const updateData = {
+      geometry_config: {
+        file_url: fileUrl,
+        file_path: filePath,
+        file_name: file.name,
+        file_size: file.size,
+        uploaded_at: new Date().toISOString(),
+        file_type: 'application/octet-stream'
+      },
+      updated_at: new Date().toISOString()
+    };
+    
+    const { error } = await supabase
       .from('simulations')
-      .update({
-        geometry_config: {
-          file_url: fileUrl,
-          file_path: filePath,
-          file_name: file.name,
-          file_size: file.size,
-          uploaded_at: new Date().toISOString()
-        },
-        updated_at: new Date().toISOString()
-      })
+      .update(updateData)
       .eq('id', simulationId)
       .eq('user_id', userId);
     
+    if (error) {
+      console.warn('⚠️ Échec mise à jour simulation:', error.message);
+      return;
+    }
+    
     console.log('✅ Simulation mise à jour');
   } catch (updateError: any) {
-    console.warn('⚠️ Échec mise à jour simulation (non critique):', updateError.message);
-    // Ne pas échouer l'upload à cause de cette erreur
+    console.warn('⚠️ Exception mise à jour simulation:', updateError.message);
   }
-};
-
-// Edge Function fallback
-const uploadGeometryViaEdgeFunction = async (
-  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
-): Promise<UploadGeometryResponse> => {
-  console.log('🔄 Utilisation Edge Function fallback...');
-  
-  const session = await ensureSession();
-  
-  console.log('🔄 Conversion en base64...');
-  const arrayBuffer = await params.file.arrayBuffer();
-  const fileData = arrayBufferToBase64(arrayBuffer);
-  
-  console.log('🔄 Appel Edge Function upload-geometry...');
-  
-  const edgeFunctionPromise = supabase.functions.invoke('upload-geometry', {
-    body: {
-      fileName: params.file.name,
-      fileData: fileData,
-      file_type: 'application/octet-stream', // Type générique
-      userId: params.userId,
-      simulationId: params.simulationId,
-      geometry_config: params.geometryConfig || {}
-    },
-    headers: {
-      'Authorization': `Bearer ${session.access_token}`
-    }
-  });
-  
-  const { data, error } = await withTimeout(
-    edgeFunctionPromise,
-    45000,
-    '❌ Edge Function timeout'
-  );
-  
-  if (error) {
-    console.error('❌ Edge Function error:', error);
-    throw error;
-  }
-  
-  if (!data?.success) {
-    console.error('❌ Edge Function returned error:', data?.error);
-    throw new Error(data?.error || 'Échec Edge Function');
-  }
-  
-  console.log('✅ Edge Function réussie');
-  
-  return {
-    success: true,
-    fileUrl: data.fileUrl,
-    fileName: params.file.name,
-    fileSize: params.file.size,
-    fileType: 'application/octet-stream',
-    path: data.path
-  };
 };
 
 export const deleteSimulation = async (simulationId: string): Promise<void> => {
