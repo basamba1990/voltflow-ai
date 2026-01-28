@@ -98,32 +98,11 @@ const validateFile = (file: File): void => {
   console.log('✅ Fichier validé');
 };
 
-// PROBLÈME: Les buckets n'acceptent pas tous les types MIME
-// SOLUTION: Utiliser uniquement les types MIME autorisés
+// 🔥 CORRECTION CRITIQUE: Forcer application/octet-stream pour tous les fichiers
+// Cela garantit que Supabase accepte le fichier quel que soit son format CAO
 const getSafeContentType = (fileName: string): string => {
-  const ext = fileName.toLowerCase().split('.').pop();
-  
-  const safeTypeMap: Record<string, string> = {
-    // Formats 3D - utiliser application/octet-stream (toujours autorisé)
-    'stl': 'application/octet-stream',
-    'step': 'application/octet-stream',
-    'stp': 'application/octet-stream',
-    'obj': 'application/octet-stream',
-    'iges': 'application/octet-stream',
-    'igs': 'application/octet-stream',
-    'ply': 'application/octet-stream',
-    
-    // Formats VTK - utiliser text/plain ou application/octet-stream
-    'vtp': 'application/octet-stream',
-    'vti': 'application/octet-stream',
-    'vtu': 'application/octet-stream',
-    'vtk': 'application/octet-stream',
-    'xml': 'application/octet-stream', // VTP est du XML
-  };
-  
-  const safeType = safeTypeMap[ext || ''] || 'application/octet-stream';
-  console.log('🔒 Type MIME sûr:', fileName, '→', safeType);
-  return safeType;
+  console.log('🔒 Forçage Type MIME universel pour:', fileName, '→ application/octet-stream');
+  return 'application/octet-stream';
 };
 
 // Fonction timeout
@@ -315,18 +294,17 @@ export const updateSimulation = async (
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) throw new Error('Authentification requise');
 
-    const updateData: SimulationUpdate = {};
-    if (params.name !== undefined) updateData.name = params.name.trim();
-    if (params.description !== undefined) updateData.description = params.description?.trim() || null;
-    if (params.geometryType !== undefined) updateData.geometry_type = params.geometryType;
-    
-    if (params.config) {
-      updateData.geometry_config = params.config.geometry_config as any;
-      updateData.boundary_conditions = params.config.boundary_conditions as any;
-      updateData.material_id = params.config.material_id;
-      updateData.mesh_density = params.config.mesh_density;
-      if (params.config.solver_type) updateData.solver_type = params.config.solver_type;
-    }
+    const updateData: SimulationUpdate = {
+      name: params.name?.trim(),
+      description: params.description?.trim(),
+      geometry_type: params.geometryType,
+      geometry_config: params.config?.geometry_config,
+      boundary_conditions: params.config?.boundary_conditions as any,
+      material_id: params.config?.material_id,
+      mesh_density: params.config?.mesh_density,
+      solver_type: params.config?.solver_type,
+      updated_at: new Date().toISOString(),
+    };
 
     const { data, error } = await supabase
       .from('simulations')
@@ -350,103 +328,37 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) throw new Error('Authentification requise');
 
-    const { data: simulation, error: fetchError } = await supabase
-      .from('simulations')
-      .select('*')
-      .eq('id', simulationId)
-      .eq('user_id', session.user.id)
-      .single();
-
-    if (fetchError) throw fetchError;
-
-    if (simulation.status === 'running') {
-      throw new Error('Une simulation est déjà en cours');
-    }
-
-    await supabase
-      .from('simulations')
-      .update({
-        status: 'running',
-        progress: 0,
-        error_message: null,
-        started_at: new Date().toISOString()
-      })
-      .eq('id', simulationId);
-
-    const meshMap: Record<string, number> = { low: 500, medium: 1000, high: 5000 };
-    const mesh_elements = meshMap[simulation.mesh_density] || 1000;
-
-    console.log('🚀 Démarrage simulation via Edge Function...');
-    
-    const simulationPromise = supabase.functions.invoke('simulate', {
-      body: {
-        simulation_id: simulationId,
-        config: {
-          ...simulation,
-          mesh_elements
-        },
-        user_id: session.user.id,
-        timestamp: new Date().toISOString()
+    const { data, error } = await supabase.functions.invoke('start-simulation', {
+      body: { simulationId },
+      headers: {
+        'Authorization': `Bearer ${session.access_token}`
       }
     });
 
-    const { data, error } = await withTimeout(
-      simulationPromise,
-      65000,
-      'La simulation a dépassé le temps d\'attente maximum (65 secondes)'
-    );
-
     if (error) throw error;
 
-    return {
-      success: true,
-      simulation_id: simulationId,
-      status: 'running',
-      message: 'Simulation lancée avec succès'
-    };
+    return data as StartSimulationResponse;
   } catch (error: any) {
     console.error('❌ startSimulation error:', error);
-    
-    await supabase
-      .from('simulations')
-      .update({
-        status: 'failed',
-        error_message: error.message,
-        completed_at: new Date().toISOString()
-      })
-      .eq('id', simulationId);
-    
     throw error;
   }
 };
 
-// -----------------------------------------------------------------------------
-// UPLOAD GÉOMÉTRIE - SOLUTION DÉFINITIVE
-// -----------------------------------------------------------------------------
-export const uploadGeometry = async (
-  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
-): Promise<UploadGeometryResponse> => {
-  console.log('🚀 ========== DÉBUT UPLOAD ==========');
-  console.log('📁 Fichier:', params.file.name, params.file.size, 'bytes');
-  console.log('👤 User ID:', params.userId);
-  console.log('🎮 Simulation ID:', params.simulationId);
-  
+// 🔥 FONCTION PRINCIPALE D'UPLOAD - VERSION CORRIGÉE
+export const uploadGeometry = async (params: {
+  file: File;
+  userId: string;
+  simulationId?: string;
+  geometryConfig?: any;
+}): Promise<UploadGeometryResponse> => {
   try {
-    // 1. Validation
+    console.log('🚀 ========== DÉBUT UPLOAD GÉOMÉTRIE ==========');
+    console.log('📁 Fichier:', params.file.name, `(${(params.file.size / 1024 / 1024).toFixed(2)}MB)`);
+    
     validateFile(params.file);
-    
-    // 2. Vérification session
-    console.log('🔐 Vérification session...');
-    const session = await ensureSession();
-    
-    if (session.user.id !== params.userId) {
-      console.warn('⚠️ ID utilisateur mismatch:', session.user.id, 'vs', params.userId);
-    }
-    
-    // 3. Upload avec URL signée (solution fiable)
-    console.log('🔄 Upload avec URL signée...');
-    
+
     const uploadPromise = (async () => {
+      // Stratégie d'upload: Essayer geometries d'abord, puis simulation-files
       try {
         console.log('🔄 Tentative upload geometries avec URL signée...');
         return await uploadToGeometries({
@@ -522,9 +434,9 @@ const uploadToSimulationFiles = async (
   
   console.log('📤 Upload simulation-files - Nom fichier:', fileName);
   
-  // Type MIME sûr (toujours accepté)
+  // 🔥 CORRECTION: Forcer application/octet-stream
   const contentType = 'application/octet-stream';
-  console.log('📄 Type MIME sûr:', contentType);
+  console.log('📄 Type MIME forcé:', contentType);
   
   // Upload vers simulation-files
   console.log('⏳ Upload vers Supabase Storage (bucket: simulation-files)...');
@@ -603,8 +515,8 @@ const uploadToGeometries = async (
   
   console.log('📤 Upload geometries - Nom fichier:', fileName);
   
-  // Type MIME sûr pour geometries
-  const contentType = getSafeContentType(params.file.name);
+  // 🔥 CORRECTION: Forcer application/octet-stream
+  const contentType = 'application/octet-stream';
   
   // Upload vers geometries (bucket avec RLS)
   console.log('⏳ Upload vers Supabase Storage (bucket: geometries)...');
