@@ -1,63 +1,20 @@
 import { supabase } from '@/lib/supabase';
 import type { Database } from '@/lib/database.types';
 
-// -----------------------------------------------------------------------------
-// TYPES - Exports de types MIS À JOUR
-// -----------------------------------------------------------------------------
 export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
   simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
-  mesh_data?: MeshData[];
-  visualization_data?: VisualizationData[];
-  optimization_history?: OptimizationHistory[];
+  mesh_data?: Database['public']['Tables']['mesh_data']['Row'][];
 };
 
 export type SimulationInsert = Database['public']['Tables']['simulations']['Insert'];
 export type SimulationUpdate = Database['public']['Tables']['simulations']['Update'];
 export type SimulationResult = Database['public']['Tables']['simulation_results']['Row'];
-
-// Types pour les nouvelles tables
-export interface MeshData {
-  id: string;
-  simulation_id: string;
-  file_name: string;
-  file_url: string;
-  file_size?: number;
-  mesh_type?: string;
-  element_count?: number;
-  node_count?: number;
-  quality_metric?: number;
-  bounds?: { x: [number, number]; y: [number, number]; z: [number, number] };
-  created_at: string;
-}
-
-export interface VisualizationData {
-  id: string;
-  simulation_id: string;
-  vtk_file_url?: string;
-  png_preview_url?: string;
-  animation_url?: string;
-  camera_angles?: any[];
-  color_map?: string;
-  created_at: string;
-}
-
-export interface OptimizationHistory {
-  id: string;
-  simulation_id: string;
-  generation: number;
-  best_fitness: number;
-  average_fitness: number;
-  mutation_count?: number;
-  hyperparameters: any;
-  created_at: string;
-}
-
+export type MeshData = Database['public']['Tables']['mesh_data']['Row'];
 export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type MeshDensity = 'low' | 'medium' | 'high';
 export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
 export type FluidType = 'air' | 'water' | 'oil';
 export type MeshType = 'tetrahedral' | 'hexahedral' | 'polyhedral' | 'unstructured' | 'structured' | 'surface';
-export type SolverType = 'fem_fortran' | 'openfoam' | 'calculix' | 'ansys';
 
 export interface SimulationConfig {
   geometry_config: {
@@ -76,10 +33,7 @@ export interface SimulationConfig {
   };
   material_id: string;
   mesh_density: MeshDensity;
-  mesh_density_level?: string; // Nouveau champ
-  solver_type?: SolverType; // Nouveau champ
-  optimization_enabled?: boolean; // Nouveau champ
-  vtk_visualization_enabled?: boolean; // Nouveau champ
+  solver_type?: string;
 }
 
 export interface CreateSimulationParams {
@@ -107,19 +61,6 @@ export interface UploadGeometryResponse {
   meshDataId?: string;
 }
 
-export interface UploadToSimulationFilesParams {
-  file: File | Blob;
-  simulationId: string;
-  userId: string;
-  meshType?: MeshType;
-  meshMetadata?: {
-    element_count?: number;
-    node_count?: number;
-    quality_metric?: number;
-    bounds?: { x: [number, number]; y: [number, number]; z: [number, number] };
-  };
-}
-
 export interface UploadResult {
   success: boolean;
   publicUrl?: string;
@@ -128,19 +69,6 @@ export interface UploadResult {
   fileSize?: number;
   meshDataId?: string;
 }
-
-// -----------------------------------------------------------------------------
-// FONCTIONS UTILITAIRES (inchangées)
-// -----------------------------------------------------------------------------
-
-const arrayBufferToBase64 = (arrayBuffer: ArrayBuffer): string => {
-  const bytes = new Uint8Array(arrayBuffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-};
 
 const validateFile = (file: File): void => {
   console.log('🔍 Validation fichier:', file.name, file.size, file.type);
@@ -153,8 +81,7 @@ const validateFile = (file: File): void => {
   const validExtensions = [
     '.stl', '.step', '.stp', '.obj', 
     '.vtp', '.vti', '.ply', '.vtk',
-    '.iges', '.igs', '.xml', '.vtu',
-    '.msh', '.mesh', '.inp', '.cgns'
+    '.iges', '.igs', '.xml', '.vtu'
   ];
   
   const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
@@ -212,10 +139,6 @@ const ensureSession = async (maxRetries = 3): Promise<any> => {
   throw new Error('Impossible de vérifier la session');
 };
 
-// -----------------------------------------------------------------------------
-// FONCTIONS EXPORTÉES - MISES À JOUR POUR LA COMPATIBILITÉ
-// -----------------------------------------------------------------------------
-
 export const getSimulations = async (
   options: { limit?: number; status?: SimulationStatus; offset?: number } = {}
 ): Promise<Simulation[]> => {
@@ -226,13 +149,7 @@ export const getSimulations = async (
     const { limit = 10, status, offset = 0 } = options;
     let query = supabase
       .from('simulations')
-      .select(`
-        *,
-        simulation_results (*),
-        mesh_data (*),
-        visualization_data (*),
-        optimization_history (*)
-      `)
+      .select('*, simulation_results (*), mesh_data (*)')
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -256,13 +173,7 @@ export const getSimulationById = async (simulationId: string): Promise<Simulatio
 
     const { data, error } = await supabase
       .from('simulations')
-      .select(`
-        *,
-        simulation_results (*),
-        mesh_data (*),
-        visualization_data (*),
-        optimization_history (*)
-      `)
+      .select('*, simulation_results (*), mesh_data (*)')
       .eq('id', simulationId)
       .eq('user_id', session.user.id)
       .single();
@@ -319,46 +230,6 @@ export const getMeshData = async (simulationId: string): Promise<MeshData[]> => 
   }
 };
 
-export const getVisualizationData = async (simulationId: string): Promise<VisualizationData[]> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
-
-    const { data, error } = await supabase
-      .from('visualization_data')
-      .select('*')
-      .eq('simulation_id', simulationId)
-      .order('created_at', { ascending: false });
-
-    if (error) throw error;
-
-    return data as VisualizationData[];
-  } catch (error: any) {
-    console.error('❌ getVisualizationData error:', error);
-    throw error;
-  }
-};
-
-export const getOptimizationHistory = async (simulationId: string): Promise<OptimizationHistory[]> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Utilisateur non authentifié');
-
-    const { data, error } = await supabase
-      .from('optimization_history')
-      .select('*')
-      .eq('simulation_id', simulationId)
-      .order('generation', { ascending: true });
-
-    if (error) throw error;
-
-    return data as OptimizationHistory[];
-  } catch (error: any) {
-    console.error('❌ getOptimizationHistory error:', error);
-    throw error;
-  }
-};
-
 export const createSimulation = async (params: CreateSimulationParams): Promise<Simulation> => {
   try {
     const { data: { session } } = await supabase.auth.getSession();
@@ -373,10 +244,7 @@ export const createSimulation = async (params: CreateSimulationParams): Promise<
       boundary_conditions: params.config.boundary_conditions as any,
       material_id: params.config.material_id,
       mesh_density: params.config.mesh_density,
-      mesh_density_level: params.config.mesh_density_level || 'high', // Nouveau
-      solver_type: params.config.solver_type || 'fem_fortran', // Nouveau
-      optimization_enabled: params.config.optimization_enabled || false, // Nouveau
-      vtk_visualization_enabled: params.config.vtk_visualization_enabled !== false, // Nouveau (true par défaut)
+      solver_type: params.config.solver_type || 'fem_fortran',
       status: 'pending' as SimulationStatus,
       progress: 0,
     };
@@ -412,10 +280,7 @@ export const updateSimulation = async (
       boundary_conditions: params.config?.boundary_conditions as any,
       material_id: params.config?.material_id,
       mesh_density: params.config?.mesh_density,
-      mesh_density_level: params.config?.mesh_density_level, // Nouveau
-      solver_type: params.config?.solver_type, // Nouveau
-      optimization_enabled: params.config?.optimization_enabled, // Nouveau
-      vtk_visualization_enabled: params.config?.vtk_visualization_enabled, // Nouveau
+      solver_type: params.config?.solver_type,
       updated_at: new Date().toISOString(),
     };
 
@@ -523,15 +388,15 @@ export const uploadGeometry = async (
     }
 
     if (!params.simulationId) {
-      console.warn('⚠️ simulationId non fourni, upload sans création de mesh_data');
-      return await uploadFileOnly(params.file, params.userId, params.simulationId);
+      const result = await uploadFileOnly(params.file, params.userId);
+      return result;
     }
 
     const result = await uploadToSimulationFilesSimple({
       file: params.file,
       simulationId: params.simulationId,
       userId: params.userId,
-      meshType: params.meshType || 'tetrahedral'
+      meshType: params.meshType || 'unstructured'
     });
     
     console.log('✅ ========== UPLOAD RÉUSSI ==========');
@@ -564,157 +429,91 @@ export const uploadGeometry = async (
   }
 };
 
-// 🔥 FONCTION UPDATÉE POUR LA COMPATIBILITÉ COMPLÈTE
-export const uploadToSimulationFilesSimple = async (
-  params: UploadToSimulationFilesParams
+const uploadToSimulationFilesSimple = async (
+  params: { file: File; simulationId: string; userId: string; meshType?: MeshType }
 ): Promise<UploadResult> => {
-  try {
-    const { file, simulationId, userId, meshType = 'tetrahedral', meshMetadata = {} } = params;
-    
-    if (!file || !simulationId || !userId) {
-      return { 
-        success: false, 
-        error: 'Missing required parameters: file, simulationId, userId' 
-      };
-    }
-
-    const timestamp = Date.now();
-    const randomStr = Math.random().toString(36).slice(2, 9);
-    const fileExtension = (file as File).name?.split('.').pop() || 'vtk';
-    
-    const fileName = `${userId}/${simulationId}_${timestamp}_${randomStr}.${fileExtension}`;
-    
-    console.log('📤 Upload simulation-files - Chemin:', fileName);
-    
-    const fileData = file instanceof Blob ? file : new Blob([file]);
-    
-    const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('simulation-files')
-      .upload(fileName, fileData, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: (file as File).type || 'application/octet-stream'
-      });
-
-    if (uploadError) {
-      console.error('❌ Erreur upload simulation-files:', uploadError);
-      return { 
-        success: false, 
-        error: uploadError.message 
-      };
-    }
-
-    const { data: urlData } = supabase.storage
-      .from('simulation-files')
-      .getPublicUrl(fileName);
-
-    if (!urlData?.publicUrl) {
-      return { 
-        success: false, 
-        error: 'Impossible de générer URL publique pour le fichier' 
-      };
-    }
-
-    console.log('✅ Fichier uploadé:', urlData.publicUrl);
-
-    // 🔥 INSERTION COMPATIBLE AVEC LE NOUVEAU SCHÉMA SQL
-    let meshDataId: string | undefined;
-    try {
-      const { data: meshData, error: meshError } = await supabase
-        .from('mesh_data')
-        .insert({
-          simulation_id: simulationId,
-          file_name: fileName,
-          file_url: urlData.publicUrl,
-          file_size: (file as File).size || fileData.size,
-          mesh_type: meshType,
-          element_count: meshMetadata.element_count,
-          node_count: meshMetadata.node_count,
-          quality_metric: meshMetadata.quality_metric,
-          bounds: meshMetadata.bounds,
-          created_at: new Date().toISOString()
-        })
-        .select('id')
-        .single();
-
-      if (meshError) {
-        console.error('❌ Erreur création mesh_data:', meshError);
-        // Fallback: utiliser l'ancien schéma si le nouveau échoue
-        await createMeshDataFallback(simulationId, userId, fileName, urlData.publicUrl, fileData, meshType);
-      } else {
-        meshDataId = meshData.id;
-        console.log('✅ Record mesh_data créé avec ID:', meshDataId);
-      }
-    } catch (meshError: any) {
-      console.warn('⚠️ Exception création mesh_data:', meshError.message);
-      await createMeshDataFallback(simulationId, userId, fileName, urlData.publicUrl, fileData, meshType);
-    }
-
-    await updateSimulationWithFileUrl(simulationId, userId, urlData.publicUrl, fileName, file);
-
-    return {
-      success: true,
-      publicUrl: urlData.publicUrl,
-      fileName: fileName,
-      fileSize: (file as File).size || fileData.size,
-      meshDataId: meshDataId
-    };
-
-  } catch (error: any) {
-    console.error('❌ uploadToSimulationFilesSimple error:', error);
+  const { file, simulationId, userId, meshType = 'unstructured' } = params;
+  
+  if (!file || !simulationId || !userId) {
     return { 
       success: false, 
-      error: error.message || 'Unknown error' 
+      error: 'Missing required parameters: file, simulationId, userId' 
     };
   }
-};
 
-// Fallback pour la compatibilité avec l'ancien schéma
-const createMeshDataFallback = async (
-  simulationId: string,
-  userId: string,
-  fileName: string,
-  fileUrl: string,
-  fileData: Blob,
-  meshType: string
-): Promise<void> => {
+  const timestamp = Date.now();
+  const randomStr = Math.random().toString(36).slice(2, 9);
+  const fileExtension = (file as File).name?.split('.').pop() || 'vtk';
+  
+  const fileName = `${userId}/${timestamp}_${randomStr}.${fileExtension}`;
+  
+  console.log('📤 Upload simulation-files - Chemin:', fileName);
+  
+  const fileData = file instanceof Blob ? file : new Blob([file]);
+  
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from('simulation-files')
+    .upload(fileName, fileData, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: (file as File).type || 'application/octet-stream'
+    });
+
+  if (uploadError) {
+    console.error('❌ Erreur upload simulation-files:', uploadError);
+    return { 
+      success: false, 
+      error: uploadError.message 
+    };
+  }
+
+  const { data: urlData } = supabase.storage
+    .from('simulation-files')
+    .getPublicUrl(fileName);
+
+  if (!urlData?.publicUrl) {
+    return { 
+      success: false, 
+      error: 'Impossible de générer URL publique pour le fichier' 
+    };
+  }
+
+  console.log('✅ Fichier uploadé:', urlData.publicUrl);
+
+  let meshDataId: string | undefined;
   try {
-    // Vérifier si la table mesh_data a une colonne user_id
-    const { data: tableInfo } = await supabase
-      .from('information_schema.columns')
-      .select('column_name')
-      .eq('table_schema', 'public')
-      .eq('table_name', 'mesh_data')
-      .eq('column_name', 'user_id');
-
-    const hasUserIdColumn = tableInfo && tableInfo.length > 0;
-
-    const meshDataRecord: any = {
-      simulation_id: simulationId,
-      file_name: fileName,
-      file_url: fileUrl,
-      file_size: fileData.size,
-      mesh_type: meshType,
-      created_at: new Date().toISOString()
-    };
-
-    // Ajouter user_id seulement si la colonne existe
-    if (hasUserIdColumn) {
-      meshDataRecord.user_id = userId;
-    }
-
-    const { error } = await supabase
+    const { data: meshData, error: meshError } = await supabase
       .from('mesh_data')
-      .insert(meshDataRecord);
+      .insert({
+        simulation_id: simulationId,
+        file_name: fileName,
+        file_url: urlData.publicUrl,
+        file_size: (file as File).size || fileData.size,
+        mesh_type: meshType,
+        created_at: new Date().toISOString()
+      })
+      .select('id')
+      .single();
 
-    if (error) {
-      console.warn('⚠️ Échec fallback création mesh_data:', error.message);
+    if (meshError) {
+      console.error('❌ Erreur création mesh_data:', meshError);
     } else {
-      console.log('✅ Record mesh_data créé (fallback)');
+      meshDataId = meshData.id;
+      console.log('✅ Record mesh_data créé avec ID:', meshDataId);
     }
-  } catch (error: any) {
-    console.warn('⚠️ Exception fallback création mesh_data:', error.message);
+  } catch (meshError: any) {
+    console.warn('⚠️ Exception création mesh_data:', meshError.message);
   }
+
+  await updateSimulationWithFileUrl(simulationId, userId, urlData.publicUrl, fileName, file);
+
+  return {
+    success: true,
+    publicUrl: urlData.publicUrl,
+    fileName: fileName,
+    fileSize: (file as File).size || fileData.size,
+    meshDataId: meshDataId
+  };
 };
 
 const uploadFileOnly = async (
@@ -777,7 +576,7 @@ const uploadFileOnly = async (
 };
 
 const updateSimulationWithFileUrl = async (
-  simulationId: string,
+  simulationId: string | undefined,
   userId: string,
   fileUrl: string,
   filePath: string,
@@ -837,8 +636,6 @@ export const deleteSimulation = async (simulationId: string): Promise<void> => {
       }
     }
 
-    await supabase.from('visualization_data').delete().eq('simulation_id', simulationId);
-    await supabase.from('optimization_history').delete().eq('simulation_id', simulationId);
     await supabase.from('mesh_data').delete().eq('simulation_id', simulationId);
     await supabase.from('simulation_results').delete().eq('simulation_id', simulationId);
     
@@ -852,84 +649,6 @@ export const deleteSimulation = async (simulationId: string): Promise<void> => {
     
   } catch (error: any) {
     console.error('❌ deleteSimulation error:', error);
-    throw error;
-  }
-};
-
-export const createVisualizationData = async (
-  simulationId: string,
-  data: {
-    vtk_file_url?: string;
-    png_preview_url?: string;
-    animation_url?: string;
-    camera_angles?: any[];
-    color_map?: string;
-  }
-): Promise<VisualizationData> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
-
-    const visualizationData = {
-      simulation_id: simulationId,
-      vtk_file_url: data.vtk_file_url,
-      png_preview_url: data.png_preview_url,
-      animation_url: data.animation_url,
-      camera_angles: data.camera_angles || [],
-      color_map: data.color_map || 'thermal',
-      created_at: new Date().toISOString()
-    };
-
-    const { data: result, error } = await supabase
-      .from('visualization_data')
-      .insert(visualizationData)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    return result as VisualizationData;
-  } catch (error: any) {
-    console.error('❌ createVisualizationData error:', error);
-    throw error;
-  }
-};
-
-export const createOptimizationHistory = async (
-  simulationId: string,
-  data: {
-    generation: number;
-    best_fitness: number;
-    average_fitness: number;
-    mutation_count?: number;
-    hyperparameters: any;
-  }
-): Promise<OptimizationHistory> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) throw new Error('Authentification requise');
-
-    const optimizationData = {
-      simulation_id: simulationId,
-      generation: data.generation,
-      best_fitness: data.best_fitness,
-      average_fitness: data.average_fitness,
-      mutation_count: data.mutation_count || 0,
-      hyperparameters: data.hyperparameters,
-      created_at: new Date().toISOString()
-    };
-
-    const { data: result, error } = await supabase
-      .from('optimization_history')
-      .insert(optimizationData)
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    return result as OptimizationHistory;
-  } catch (error: any) {
-    console.error('❌ createOptimizationHistory error:', error);
     throw error;
   }
 };
@@ -953,43 +672,19 @@ export const testUpload = async (file: File, userId: string): Promise<UploadGeom
   return uploadGeometry({ file, userId });
 };
 
-export const getSignedUrl = async (filePath: string, expiresIn = 3600): Promise<string | null> => {
-  try {
-    const { data, error } = await supabase.storage
-      .from('simulation-files')
-      .createSignedUrl(filePath, expiresIn);
-    
-    if (error) {
-      console.error('❌ Erreur génération URL signée:', error);
-      return null;
-    }
-    
-    return data.signedUrl;
-  } catch (error) {
-    console.error('❌ Exception génération URL signée:', error);
-    return null;
-  }
-};
-
 export const SimulationService = {
   getSimulations,
   getSimulationById,
   getSimulationResults,
   getMeshData,
-  getVisualizationData,
-  getOptimizationHistory,
   createSimulation,
   updateSimulation,
   startSimulation,
   uploadGeometry,
-  uploadToSimulationFilesSimple,
   deleteSimulation,
-  createVisualizationData,
-  createOptimizationHistory,
   subscribeToSimulation,
   unsubscribeFromChannel,
-  testUpload,
-  getSignedUrl
+  testUpload
 };
 
 export default SimulationService;
