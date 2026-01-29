@@ -1,4 +1,3 @@
-// src/services/simulation.service.ts
 import { supabase } from '@/lib/supabase';
 import type { Database } from '@/lib/database.types';
 
@@ -104,7 +103,7 @@ const getSafeContentType = (fileName: string): string => {
   return 'application/octet-stream';
 };
 
-// Fonction timeout
+// Fonction timeout - 🔥 CORRECTION CRITIQUE: Réduit à 24s pour éviter conflit avec Edge Function (25s)
 const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> => {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
@@ -299,23 +298,77 @@ export const updateSimulation = async (
   }
 };
 
-export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
+// 🔥 CORRECTION CRITIQUE: Fonction startSimulation corrigée selon l'audit
+export const startSimulation = async (simulationId: string, config?: SimulationConfig): Promise<StartSimulationResponse> => {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) throw new Error('Authentification requise');
 
-    const { data, error } = await supabase.functions.invoke('start-simulation', {
-      body: { simulationId },
+    // 🔥 CORRECTION: Ne pas envoyer user_id dans le body - récupéré via JWT
+    const payload = {
+      simulation_id: simulationId,
+      config: config || {}
+    };
+
+    console.log('🚀 Lancement simulation:', {
+      simulationId,
+      userId: session.user.id,
+      config: payload.config
+    });
+
+    // 🔥 CORRECTION: Timeout réduit à 24000ms (24s) pour éviter conflit avec Edge Function (25s)
+    const invokePromise = supabase.functions.invoke('simulate', {
+      body: payload,
       headers: {
         'Authorization': `Bearer ${session.access_token}`
       }
     });
 
-    if (error) throw error;
+    // 🔥 CORRECTION: Timeout ajusté à 24s au lieu de 30s
+    const { data, error } = await withTimeout(
+      invokePromise,
+      24000, // 24 secondes
+      '❌ Edge Function timeout (24s). Vérifiez que la simulation n\'est pas déjà en cours.'
+    );
 
-    return data as StartSimulationResponse;
+    if (error) {
+      console.error('❌ Erreur Edge Function:', error);
+      throw error;
+    }
+
+    // Validation de la réponse
+    if (!data.success) {
+      throw new Error(data.error || 'Erreur inconnue lors de la simulation');
+    }
+
+    return {
+      success: true,
+      simulation_id: data.simulation_id,
+      status: data.status,
+      results: data.results,
+      message: data.message
+    };
   } catch (error: any) {
     console.error('❌ startSimulation error:', error);
+    
+    // Tentative de mise à jour du statut en cas d'erreur
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (session?.user) {
+        await supabase
+          .from('simulations')
+          .update({
+            status: 'failed',
+            error_message: error.message.substring(0, 500),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', simulationId)
+          .eq('user_id', session.user.id);
+      }
+    } catch (updateError) {
+      console.warn('⚠️ Impossible de mettre à jour le statut après erreur:', updateError);
+    }
+    
     throw error;
   }
 };
@@ -334,6 +387,12 @@ export const uploadGeometry = async (
     // 2. Vérification session
     const session = await ensureSession();
     console.log('✅ Session vérifiée, utilisateur:', session.user.id);
+
+    // 🔥 CORRECTION: Vérification de propriété
+    if (session.user.id !== params.userId) {
+      console.error('❌ Mismatch userId:', session.user.id, 'vs', params.userId);
+      throw new Error('Forbidden: User ID mismatch');
+    }
 
     // 3. Upload DIRECT vers simulation-files (bucket public)
     const result = await uploadToSimulationFilesSimple({
@@ -357,6 +416,8 @@ export const uploadGeometry = async (
       userMessage = "Erreur de permissions Supabase. Vérifiez les politiques RLS.";
     } else if (error.message?.includes('timeout')) {
       userMessage = "Le serveur n'a pas confirmé l'upload. Vérifiez vos permissions ou réessayez.";
+    } else if (error.message?.includes('Forbidden')) {
+      userMessage = "Accès refusé. Vérifiez que vous êtes connecté avec le bon compte.";
     }
     
     throw new Error(userMessage);
@@ -371,7 +432,7 @@ const uploadToSimulationFilesSimple = async (
   const { file, userId, simulationId, session } = params;
   
   if (session.user.id !== userId) {
-    console.warn('⚠️ ID utilisateur mismatch:', session.user.id, 'vs', userId);
+    throw new Error('Forbidden: User ID mismatch');
   }
   
   const timestamp = Date.now();
@@ -393,6 +454,7 @@ const uploadToSimulationFilesSimple = async (
       contentType: contentType
     });
   
+  // 🔥 CORRECTION: Timeout cohérent
   const { data: uploadData, error: uploadError } = await withTimeout(
     uploadPromise,
     30000, 
@@ -401,6 +463,12 @@ const uploadToSimulationFilesSimple = async (
   
   if (uploadError) {
     console.error('❌ Erreur upload simulation-files:', uploadError);
+    
+    // Gestion spécifique des erreurs de conflit
+    if (uploadError.message?.includes('already exists')) {
+      throw new Error('Un fichier avec ce nom existe déjà. Veuillez renommer votre fichier.');
+    }
+    
     throw uploadError;
   }
   
@@ -452,9 +520,15 @@ const updateSimulationWithFileUrl = async (
       .eq('id', simulationId)
       .eq('user_id', userId);
     
-    if (error) console.warn('⚠️ Échec mise à jour simulation:', error.message);
+    if (error) {
+      console.warn('⚠️ Échec mise à jour simulation:', error.message);
+      throw error;
+    }
+    
+    console.log('✅ Simulation mise à jour avec fichier:', filePath);
   } catch (updateError: any) {
     console.warn('⚠️ Exception mise à jour simulation:', updateError.message);
+    throw updateError;
   }
 };
 
@@ -463,8 +537,18 @@ export const deleteSimulation = async (simulationId: string): Promise<void> => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) throw new Error('Authentification requise');
 
+    // Suppression des résultats d'abord
     await supabase.from('simulation_results').delete().eq('simulation_id', simulationId);
-    await supabase.from('simulations').delete().eq('id', simulationId).eq('user_id', session.user.id);
+    
+    // Suppression de la simulation avec vérification de propriété
+    const { error } = await supabase
+      .from('simulations')
+      .delete()
+      .eq('id', simulationId)
+      .eq('user_id', session.user.id);
+    
+    if (error) throw error;
+    
   } catch (error: any) {
     console.error('❌ deleteSimulation error:', error);
     throw error;
@@ -473,7 +557,12 @@ export const deleteSimulation = async (simulationId: string): Promise<void> => {
 
 export const subscribeToSimulation = (simulationId: string, callback: (payload: any) => void) => {
   return supabase.channel(`simulation-updates-${simulationId}`)
-    .on('postgres_changes', { event: '*', schema: 'public', table: 'simulations', filter: `id=eq.${simulationId}` }, callback)
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'simulations', 
+      filter: `id=eq.${simulationId}` 
+    }, callback)
     .subscribe();
 };
 
