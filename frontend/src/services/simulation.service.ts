@@ -6,15 +6,18 @@ import type { Database } from '@/lib/database.types';
 // -----------------------------------------------------------------------------
 export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
   simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
+  mesh_data?: Database['public']['Tables']['mesh_data']['Row'][]; // Ajout de mesh_data
 };
 
 export type SimulationInsert = Database['public']['Tables']['simulations']['Insert'];
 export type SimulationUpdate = Database['public']['Tables']['simulations']['Update'];
 export type SimulationResult = Database['public']['Tables']['simulation_results']['Row'];
+export type MeshData = Database['public']['Tables']['mesh_data']['Row'];
 export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type MeshDensity = 'low' | 'medium' | 'high';
 export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
 export type FluidType = 'air' | 'water' | 'oil';
+export type MeshType = 'tetrahedral' | 'hexahedral' | 'polyhedral' | 'unstructured' | 'structured' | 'surface';
 
 export interface SimulationConfig {
   geometry_config: {
@@ -58,6 +61,23 @@ export interface UploadGeometryResponse {
   fileSize?: number;
   fileType?: string;
   path?: string;
+  meshDataId?: string; // Ajout de l'ID du mesh_data
+}
+
+export interface UploadToSimulationFilesParams {
+  file: File | Blob;
+  simulationId: string;
+  userId: string;
+  meshType?: MeshType;
+}
+
+export interface UploadResult {
+  success: boolean;
+  publicUrl?: string;
+  error?: string;
+  fileName?: string;
+  fileSize?: number;
+  meshDataId?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -86,7 +106,8 @@ const validateFile = (file: File): void => {
   const validExtensions = [
     '.stl', '.step', '.stp', '.obj', 
     '.vtp', '.vti', '.ply', '.vtk',
-    '.iges', '.igs', '.xml', '.vtu'
+    '.iges', '.igs', '.xml', '.vtu',
+    '.msh', '.mesh', '.inp', '.cgns'
   ];
   
   const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
@@ -97,13 +118,7 @@ const validateFile = (file: File): void => {
   console.log('✅ Fichier validé');
 };
 
-// 🔥 CORRECTION CRITIQUE: Forcer application/octet-stream pour tous les fichiers
-const getSafeContentType = (fileName: string): string => {
-  console.log('🔒 Forçage Type MIME universel pour:', fileName, '→ application/octet-stream');
-  return 'application/octet-stream';
-};
-
-// Fonction timeout - 🔥 CORRECTION CRITIQUE: Réduit à 24s pour éviter conflit avec Edge Function (25s)
+// Fonction timeout - Réduit à 24s pour éviter conflit avec Edge Function (25s)
 const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> => {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
@@ -166,7 +181,7 @@ export const getSimulations = async (
     const { limit = 10, status, offset = 0 } = options;
     let query = supabase
       .from('simulations')
-      .select('*, simulation_results (*)')
+      .select('*, simulation_results (*), mesh_data (*)')
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -190,7 +205,7 @@ export const getSimulationById = async (simulationId: string): Promise<Simulatio
 
     const { data, error } = await supabase
       .from('simulations')
-      .select('*, simulation_results (*)')
+      .select('*, simulation_results (*), mesh_data (*)')
       .eq('id', simulationId)
       .eq('user_id', session.user.id)
       .single();
@@ -223,6 +238,26 @@ export const getSimulationResults = async (simulationId: string): Promise<Simula
     return data;
   } catch (error: any) {
     console.error('❌ getSimulationResults error:', error);
+    throw error;
+  }
+};
+
+export const getMeshData = async (simulationId: string): Promise<MeshData[]> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Utilisateur non authentifié');
+
+    const { data, error } = await supabase
+      .from('mesh_data')
+      .select('*')
+      .eq('simulation_id', simulationId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    return data || [];
+  } catch (error: any) {
+    console.error('❌ getMeshData error:', error);
     throw error;
   }
 };
@@ -298,13 +333,13 @@ export const updateSimulation = async (
   }
 };
 
-// 🔥 CORRECTION CRITIQUE: Fonction startSimulation corrigée selon l'audit
+// Fonction startSimulation corrigée selon l'audit
 export const startSimulation = async (simulationId: string, config?: SimulationConfig): Promise<StartSimulationResponse> => {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) throw new Error('Authentification requise');
 
-    // 🔥 CORRECTION: Ne pas envoyer user_id dans le body - récupéré via JWT
+    // Ne pas envoyer user_id dans le body - récupéré via JWT
     const payload = {
       simulation_id: simulationId,
       config: config || {}
@@ -316,7 +351,7 @@ export const startSimulation = async (simulationId: string, config?: SimulationC
       config: payload.config
     });
 
-    // 🔥 CORRECTION: Timeout réduit à 24000ms (24s) pour éviter conflit avec Edge Function (25s)
+    // Timeout réduit à 24000ms (24s) pour éviter conflit avec Edge Function (25s)
     const invokePromise = supabase.functions.invoke('simulate', {
       body: payload,
       headers: {
@@ -324,7 +359,7 @@ export const startSimulation = async (simulationId: string, config?: SimulationC
       }
     });
 
-    // 🔥 CORRECTION: Timeout ajusté à 24s au lieu de 30s
+    // Timeout ajusté à 24s au lieu de 30s
     const { data, error } = await withTimeout(
       invokePromise,
       24000, // 24 secondes
@@ -375,7 +410,7 @@ export const startSimulation = async (simulationId: string, config?: SimulationC
 
 // 🔥 FONCTION PRINCIPALE D'UPLOAD - VERSION COMPLÈTE ET CORRIGÉE
 export const uploadGeometry = async (
-  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
+  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any; meshType?: MeshType }
 ): Promise<UploadGeometryResponse> => {
   console.log('🚀 ========== DÉBUT UPLOAD GÉOMÉTRIE ==========');
   console.log('📁 Fichier:', params.file.name, `(${(params.file.size / 1024 / 1024).toFixed(2)}MB)`);
@@ -388,23 +423,37 @@ export const uploadGeometry = async (
     const session = await ensureSession();
     console.log('✅ Session vérifiée, utilisateur:', session.user.id);
 
-    // 🔥 CORRECTION: Vérification de propriété
+    // Vérification de propriété
     if (session.user.id !== params.userId) {
       console.error('❌ Mismatch userId:', session.user.id, 'vs', params.userId);
       throw new Error('Forbidden: User ID mismatch');
     }
 
-    // 3. Upload DIRECT vers simulation-files (bucket public)
+    // 3. Vérifier que simulationId est défini si on veut créer un mesh_data
+    if (!params.simulationId) {
+      console.warn('⚠️ simulationId non fourni, upload sans création de mesh_data');
+      return await uploadFileOnly(params.file, params.userId, params.simulationId);
+    }
+
+    // 4. Upload avec création de mesh_data
     const result = await uploadToSimulationFilesSimple({
       file: params.file,
-      userId: params.userId,
       simulationId: params.simulationId,
-      session: session
+      userId: params.userId,
+      meshType: params.meshType || 'unstructured'
     });
     
     console.log('✅ ========== UPLOAD RÉUSSI ==========');
     
-    return result;
+    return {
+      success: true,
+      fileUrl: result.publicUrl!,
+      fileName: result.fileName!,
+      fileSize: result.fileSize,
+      fileType: (params.file as File).type || 'application/octet-stream',
+      path: result.fileName,
+      meshDataId: result.meshDataId
+    };
     
   } catch (error: any) {
     console.error('❌ ========== UPLOAD ÉCHOUÉ ==========');
@@ -424,47 +473,146 @@ export const uploadGeometry = async (
   }
 };
 
-// 🔥 UPLOAD SIMPLIFIÉ vers simulation-files (public)
-// 🔥 CORRECTION CRITIQUE: Le chemin doit commencer par l'ID utilisateur
-const uploadToSimulationFilesSimple = async (
-  params: { file: File; userId: string; simulationId?: string; session: any }
-): Promise<UploadGeometryResponse> => {
-  const { file, userId, simulationId, session } = params;
-  
-  if (session.user.id !== userId) {
-    throw new Error('Forbidden: User ID mismatch');
+// 🔥 NOUVELLE FONCTION: Upload avec création de mesh_data
+export const uploadToSimulationFilesSimple = async (
+  params: UploadToSimulationFilesParams
+): Promise<UploadResult> => {
+  try {
+    const { file, simulationId, userId, meshType = 'unstructured' } = params;
+    
+    // Validation des paramètres requis
+    if (!file || !simulationId || !userId) {
+      return { 
+        success: false, 
+        error: 'Missing required parameters: file, simulationId, userId' 
+      };
+    }
+
+    // Génération d'un nom de fichier unique
+    const timestamp = Date.now();
+    const randomStr = Math.random().toString(36).slice(2, 9);
+    const fileExtension = (file as File).name?.split('.').pop() || 'vtk';
+    
+    // Format: userId/simulationId_timestamp_random.extension
+    const fileName = `${userId}/${simulationId}_${timestamp}_${randomStr}.${fileExtension}`;
+    
+    console.log('📤 Upload simulation-files - Chemin:', fileName);
+    
+    // Conversion en Blob si nécessaire
+    const fileData = file instanceof Blob ? file : new Blob([file]);
+    
+    // Upload vers Supabase Storage
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('simulation-files')
+      .upload(fileName, fileData, {
+        cacheControl: '3600',
+        upsert: false, // Ne pas écraser les fichiers existants
+        contentType: (file as File).type || 'application/octet-stream'
+      });
+
+    if (uploadError) {
+      console.error('❌ Erreur upload simulation-files:', uploadError);
+      return { 
+        success: false, 
+        error: uploadError.message 
+      };
+    }
+
+    // Récupération de l'URL publique
+    const { data: urlData } = supabase.storage
+      .from('simulation-files')
+      .getPublicUrl(fileName);
+
+    if (!urlData?.publicUrl) {
+      return { 
+        success: false, 
+        error: 'Impossible de générer URL publique pour le fichier' 
+      };
+    }
+
+    console.log('✅ Fichier uploadé:', urlData.publicUrl);
+
+    // Création du record dans mesh_data
+    let meshDataId: string | undefined;
+    try {
+      const { data: meshData, error: meshError } = await supabase
+        .from('mesh_data')
+        .insert({
+          simulation_id: simulationId,
+          user_id: userId,
+          file_name: fileName,
+          file_url: urlData.publicUrl,
+          mesh_type: meshType,
+          file_size: (file as File).size || fileData.size,
+          original_filename: (file as File).name || 'uploaded_file',
+          created_at: new Date().toISOString()
+        })
+        .select('id')
+        .single();
+
+      if (meshError) {
+        console.error('❌ Erreur création mesh_data:', meshError);
+        // On continue quand même, l'upload a réussi
+      } else {
+        meshDataId = meshData.id;
+        console.log('✅ Record mesh_data créé avec ID:', meshDataId);
+      }
+    } catch (meshError: any) {
+      console.warn('⚠️ Exception création mesh_data:', meshError.message);
+    }
+
+    // Mise à jour de la simulation avec l'URL du fichier
+    await updateSimulationWithFileUrl(simulationId, userId, urlData.publicUrl, fileName, file);
+
+    return {
+      success: true,
+      publicUrl: urlData.publicUrl,
+      fileName: fileName,
+      fileSize: (file as File).size || fileData.size,
+      meshDataId: meshDataId
+    };
+
+  } catch (error: any) {
+    console.error('❌ uploadToSimulationFilesSimple error:', error);
+    return { 
+      success: false, 
+      error: error.message || 'Unknown error' 
+    };
   }
-  
+};
+
+// Fonction d'upload simple sans création de mesh_data (pour backward compatibility)
+const uploadFileOnly = async (
+  file: File,
+  userId: string,
+  simulationId?: string
+): Promise<UploadGeometryResponse> => {
   const timestamp = Date.now();
   const uniqueId = Math.random().toString(36).substring(2, 9);
   const fileExt = file.name.split('.').pop()?.toLowerCase() || 'vtp';
   
-  // CHEMIN CORRIGÉ : "userId/filename"
+  // Format: userId/timestamp_random.extension
   const fileName = `${userId}/${timestamp}_${uniqueId}.${fileExt}`;
   
-  console.log('📤 Upload simulation-files - Chemin:', fileName);
+  console.log('📤 Upload simple - Chemin:', fileName);
   
   const contentType = 'application/octet-stream';
   
-  const uploadPromise = supabase.storage
-    .from('simulation-files')
-    .upload(fileName, file, {
-      cacheControl: '3600',
-      upsert: false,
-      contentType: contentType
-    });
-  
-  // 🔥 CORRECTION: Timeout cohérent
   const { data: uploadData, error: uploadError } = await withTimeout(
-    uploadPromise,
-    30000, 
+    supabase.storage
+      .from('simulation-files')
+      .upload(fileName, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: contentType
+      }),
+    30000,
     '❌ Supabase Storage upload timeout (30s)'
   );
   
   if (uploadError) {
     console.error('❌ Erreur upload simulation-files:', uploadError);
     
-    // Gestion spécifique des erreurs de conflit
     if (uploadError.message?.includes('already exists')) {
       throw new Error('Un fichier avec ce nom existe déjà. Veuillez renommer votre fichier.');
     }
@@ -480,7 +628,9 @@ const uploadToSimulationFilesSimple = async (
     throw new Error('Impossible de générer URL publique pour le fichier');
   }
   
-  await updateSimulationWithFileUrl(simulationId, userId, publicUrlData.publicUrl, fileName, file);
+  if (simulationId) {
+    await updateSimulationWithFileUrl(simulationId, userId, publicUrlData.publicUrl, fileName, file);
+  }
   
   return {
     success: true,
@@ -493,21 +643,23 @@ const uploadToSimulationFilesSimple = async (
 };
 
 const updateSimulationWithFileUrl = async (
-  simulationId: string | undefined,
+  simulationId: string,
   userId: string,
   fileUrl: string,
   filePath: string,
-  file: File
+  file: File | Blob
 ): Promise<void> => {
   if (!simulationId) return;
   
   try {
+    const fileSize = (file as File).size || (file as Blob).size;
+    
     const updateData = {
       geometry_config: {
         file_url: fileUrl,
         file_path: filePath,
-        file_name: file.name,
-        file_size: file.size,
+        file_name: (file as File).name || filePath.split('/').pop(),
+        file_size: fileSize,
         uploaded_at: new Date().toISOString(),
         file_type: 'application/octet-stream'
       },
@@ -537,7 +689,26 @@ export const deleteSimulation = async (simulationId: string): Promise<void> => {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) throw new Error('Authentification requise');
 
-    // Suppression des résultats d'abord
+    // Récupérer les mesh_data associés pour supprimer les fichiers
+    const { data: meshData } = await supabase
+      .from('mesh_data')
+      .select('file_name')
+      .eq('simulation_id', simulationId);
+
+    // Supprimer les fichiers de storage
+    if (meshData && meshData.length > 0) {
+      const filePaths = meshData.map(md => md.file_name).filter(Boolean);
+      if (filePaths.length > 0) {
+        await supabase.storage
+          .from('simulation-files')
+          .remove(filePaths);
+      }
+    }
+
+    // Suppression des mesh_data
+    await supabase.from('mesh_data').delete().eq('simulation_id', simulationId);
+    
+    // Suppression des résultats
     await supabase.from('simulation_results').delete().eq('simulation_id', simulationId);
     
     // Suppression de la simulation avec vérification de propriété
@@ -574,18 +745,40 @@ export const testUpload = async (file: File, userId: string): Promise<UploadGeom
   return uploadGeometry({ file, userId });
 };
 
+// Fonction utilitaire pour récupérer l'URL signée d'un fichier (pour les buckets privés)
+export const getSignedUrl = async (filePath: string, expiresIn = 3600): Promise<string | null> => {
+  try {
+    const { data, error } = await supabase.storage
+      .from('simulation-files')
+      .createSignedUrl(filePath, expiresIn);
+    
+    if (error) {
+      console.error('❌ Erreur génération URL signée:', error);
+      return null;
+    }
+    
+    return data.signedUrl;
+  } catch (error) {
+    console.error('❌ Exception génération URL signée:', error);
+    return null;
+  }
+};
+
 export const SimulationService = {
   getSimulations,
   getSimulationById,
   getSimulationResults,
+  getMeshData,
   createSimulation,
   updateSimulation,
   startSimulation,
   uploadGeometry,
+  uploadToSimulationFilesSimple,
   deleteSimulation,
   subscribeToSimulation,
   unsubscribeFromChannel,
-  testUpload
+  testUpload,
+  getSignedUrl
 };
 
 export default SimulationService;
