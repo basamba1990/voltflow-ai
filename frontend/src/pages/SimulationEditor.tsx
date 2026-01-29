@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Save, Play, Download, Trash2, Thermometer, Loader2, AlertCircle, ChevronLeft, UploadCloud, Box, Settings, Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy, FileUp, CheckCircle, XCircle, TestTube, ShieldAlert } from 'lucide-react';
 
 // Services et hooks
-import SimulationService from '@/services/simulation.service';
+import SimulationService, { type MeshType } from '@/services/simulation.service';
 import { useSimulation } from '@/hooks/useSimulation';
 import { useMaterials } from '@/hooks/useMaterials';
 import { useAuth } from '@/contexts/AuthContext';
@@ -46,6 +46,8 @@ export default function SimulationEditor() {
     geometryConfig: {
       file_url: '',
       file_name: '',
+      file_size: 0,
+      file_path: '',
       dimensions: { width: 100, height: 100, depth: 100 }
     },
     materialId: '',
@@ -80,11 +82,12 @@ export default function SimulationEditor() {
     field_values: Record<string, number>;
     element_id?: number;
   } | null>(null);
+  const [meshType, setMeshType] = useState<MeshType>('tetrahedral');
 
-  // 🔥 CORRECTION : Référence correcte pour setTimeout
+  // Référence pour setTimeout
   const uploadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 🔥 CORRECTION CRITIQUE : Cleanup des timeouts
+  // Cleanup des timeouts
   useEffect(() => {
     return () => {
       if (uploadTimeoutRef.current) {
@@ -132,10 +135,12 @@ export default function SimulationEditor() {
         name: simulation.name || '',
         description: simulation.description || '',
         geometryType: simulation.geometry_type || 'complex',
-        geometryConfig: gc || {
-          file_url: '',
-          file_name: '',
-          dimensions: { width: 100, height: 100, depth: 100 }
+        geometryConfig: {
+          file_url: gc?.file_url || '',
+          file_name: gc?.file_name || '',
+          file_size: gc?.file_size || 0,
+          file_path: gc?.file_path || '',
+          dimensions: gc?.dimensions || { width: 100, height: 100, depth: 100 }
         },
         materialId: simulation.material_id || '',
         meshDensity: simulation.mesh_density || 'medium',
@@ -227,10 +232,10 @@ export default function SimulationEditor() {
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
   // --------------------------------------------------------------------------
-  // 🔥 GESTION DES FICHIERS - VERSION SIMPLIFIÉE ET CORRIGÉE
+  // 🔥 GESTION DES FICHIERS - VERSION COMPATIBLE AVEC LE NOUVEAU SERVICE
   // --------------------------------------------------------------------------
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    // 🔥 CORRECTION : Reset complet avant nouvel upload
+    // Reset complet avant nouvel upload
     setUploadingFile(true);
     setUploadError(null);
     setUploadProgress(0);
@@ -249,7 +254,7 @@ export default function SimulationEditor() {
       return;
     }
 
-    // 1. VALIDATION SIMPLIFIÉE (uniquement extension)
+    // Validation simplifiée (uniquement extension)
     const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk', '.iges', '.igs', '.vtu'];
     const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
     
@@ -260,7 +265,7 @@ export default function SimulationEditor() {
       return;
     }
 
-    // 2. VALIDATION TAILLE
+    // Validation taille
     const maxSize = 50 * 1024 * 1024;
     if (file.size > maxSize) {
       setUploadingFile(false);
@@ -283,10 +288,8 @@ export default function SimulationEditor() {
       const progressInterval = setInterval(() => {
         setUploadProgress(prev => {
           if (prev < 80) {
-            // Phase d'upload : 0-80%
             return Math.min(prev + 5, 80);
           } else {
-            // Phase de finalisation : 80-95%
             if (uploadPhase !== 'finalizing') {
               setUploadPhase('finalizing');
             }
@@ -295,7 +298,7 @@ export default function SimulationEditor() {
         });
       }, 500);
 
-      // 🔥 CORRECTION : Upload via le service
+      // 🔥 UPLOAD VIA LE SERVICE MIS À JOUR
       const uploadPromise = (async () => {
         try {
           console.log('🔄 Tentative upload via SimulationService...');
@@ -303,7 +306,8 @@ export default function SimulationEditor() {
             file,
             userId: user.id,
             simulationId: id,
-            geometryConfig: formData.geometryConfig
+            geometryConfig: formData.geometryConfig,
+            meshType: meshType
           });
           
           clearInterval(progressInterval);
@@ -318,15 +322,24 @@ export default function SimulationEditor() {
             geometryConfig: {
               ...prev.geometryConfig,
               file_url: result.fileUrl,
-              file_name: result.fileName,
+              file_name: result.fileName || file.name,
+              file_size: result.fileSize || file.size,
+              file_path: result.path || '',
               dimensions: prev.geometryConfig.dimensions,
               uploaded_at: new Date().toISOString(),
-              file_size: file.size,
               file_type: result.fileType || 'application/octet-stream',
             },
           }));
           
           toast.success('✅ Fichier téléchargé avec succès');
+          
+          // 🔥 IMPORTANT : Rafraîchir la simulation pour inclure les mesh_data
+          if (id) {
+            setTimeout(() => {
+              refresh();
+            }, 1000);
+          }
+          
           return result;
           
         } catch (error: any) {
@@ -347,19 +360,23 @@ export default function SimulationEditor() {
       
       let errorMessage = error.message || 'Erreur inconnue';
       
-      // 🔥 CORRECTION : Messages d'erreur explicites et précis
+      // Messages d'erreur explicites et précis
       if (errorMessage.includes('415') || errorMessage.includes('MIME')) {
         errorMessage = "Type de fichier non supporté par le serveur.";
       } else if (errorMessage.includes('403') || errorMessage.includes('permission')) {
         errorMessage = "Erreur de permissions. Contactez l'administrateur.";
       } else if (errorMessage.includes('timeout')) {
         errorMessage = "Le serveur n'a pas confirmé l'upload. Réessayez.";
+      } else if (errorMessage.includes('already exists')) {
+        errorMessage = "Un fichier avec ce nom existe déjà. Renommez votre fichier.";
+      } else if (errorMessage.includes('User ID mismatch')) {
+        errorMessage = "Vous ne pouvez uploader que pour votre propre compte.";
       }
       
       setUploadError(errorMessage);
       toast.error(`❌ Échec de l'upload: ${errorMessage}`);
     } finally {
-      // 🔥 CORRECTION CRITIQUE : Toujours reset l'état d'upload
+      // Toujours reset l'état d'upload
       setUploadingFile(false);
       setUploadPhase('idle');
       setUploadProgress(0);
@@ -456,6 +473,43 @@ export default function SimulationEditor() {
       toast.error(error.message || 'Erreur lors de la sauvegarde');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  // 🔥 FONCTION START SIMULATION COMPATIBLE
+  const handleStartSimulation = async () => {
+    if (!id || !user?.id) {
+      toast.error('Simulation ou utilisateur non valide');
+      return;
+    }
+
+    try {
+      const config = {
+        geometry_config: formData.geometryConfig,
+        material_id: formData.materialId,
+        mesh_density: formData.meshDensity,
+        boundary_conditions: {
+          initial_temp: parseFloat(formData.initialTemp),
+          ambient_temp: parseFloat(formData.ambientTemp),
+          cooling_type: formData.coolingType,
+          convection_coeff: parseFloat(formData.convectionCoeff),
+          fluid_type: formData.fluidType,
+          fluid_velocity: parseFloat(formData.fluidVelocity),
+        },
+        solver_type: formData.solverType,
+      };
+
+      const result = await SimulationService.startSimulation(id, config);
+      
+      if (result.success) {
+        toast.success('✅ Simulation lancée avec succès');
+        refresh();
+      } else {
+        toast.error(`❌ Erreur: ${result.message || 'Échec du lancement'}`);
+      }
+    } catch (error: any) {
+      console.error('❌ Start simulation error:', error);
+      toast.error(error.message || 'Erreur lors du lancement de la simulation');
     }
   };
 
@@ -590,6 +644,26 @@ export default function SimulationEditor() {
     );
   };
 
+  // 🔥 AFFICHAGE DES MESH_DATA
+  const [meshData, setMeshData] = useState<any[]>([]);
+  
+  useEffect(() => {
+    const loadMeshData = async () => {
+      if (!id) return;
+      
+      try {
+        const data = await SimulationService.getMeshData(id);
+        setMeshData(data);
+      } catch (error) {
+        console.error('❌ Erreur chargement mesh_data:', error);
+      }
+    };
+
+    if (id) {
+      loadMeshData();
+    }
+  }, [id, simulation]);
+
   return (
     <div className="min-h-screen bg-black text-white p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4 md:space-y-6">
@@ -630,7 +704,7 @@ export default function SimulationEditor() {
             </Button>
             {id && (
               <Button
-                onClick={() => startSimulation()}
+                onClick={handleStartSimulation}
                 disabled={isRunning || !id}
                 className="bg-blue-600 hover:bg-blue-700 min-w-[120px]"
               >
@@ -701,6 +775,22 @@ export default function SimulationEditor() {
                     placeholder="Description de la simulation..."
                     className="bg-zinc-800/50 border-zinc-700 min-h-[80px]"
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label>Type de maillage</Label>
+                  <Select value={meshType} onValueChange={(v: MeshType) => setMeshType(v)}>
+                    <SelectTrigger className="bg-zinc-800/50 border-zinc-700">
+                      <SelectValue placeholder="Sélectionner un type" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-zinc-900 border-zinc-700">
+                      <SelectItem value="tetrahedral">Tétraédrique</SelectItem>
+                      <SelectItem value="hexahedral">Hexaédrique</SelectItem>
+                      <SelectItem value="polyhedral">Polyédrique</SelectItem>
+                      <SelectItem value="unstructured">Non-structuré</SelectItem>
+                      <SelectItem value="structured">Structuré</SelectItem>
+                      <SelectItem value="surface">Surface</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
                 <div className="space-y-2">
                   <Label>Géométrie</Label>
@@ -868,6 +958,50 @@ export default function SimulationEditor() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Section Mesh Data */}
+            {meshData.length > 0 && (
+              <Card className="bg-zinc-900/50 border-zinc-800 backdrop-blur-sm">
+                <CardHeader className="pb-3">
+                  <CardTitle className="flex items-center gap-2 text-sm">
+                    <Grid3X3 className="w-4 h-4" />
+                    Fichiers de maillage ({meshData.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {meshData.map((mesh) => (
+                    <div key={mesh.id} className="p-3 bg-zinc-800/30 rounded border border-zinc-700/50">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Box className="w-4 h-4 text-blue-400" />
+                          <span className="text-sm font-medium truncate max-w-[180px]" title={mesh.file_name}>
+                            {mesh.file_name?.split('/').pop() || 'Fichier de maillage'}
+                          </span>
+                        </div>
+                        <Badge variant="outline" className="text-xs">
+                          {mesh.mesh_type || 'N/A'}
+                        </Badge>
+                      </div>
+                      <div className="text-xs text-zinc-400 space-y-1">
+                        <div>Taille: {(mesh.file_size / 1024 / 1024).toFixed(2)} MB</div>
+                        <div>Créé: {new Date(mesh.created_at).toLocaleDateString()}</div>
+                      </div>
+                      {mesh.file_url && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="w-full mt-2 text-xs"
+                          onClick={() => window.open(mesh.file_url, '_blank')}
+                        >
+                          <Eye className="w-3 h-3 mr-1" />
+                          Visualiser
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Informations du point sélectionné */}
             {selectedPoint && (
@@ -1102,7 +1236,7 @@ export default function SimulationEditor() {
                       {id ? (
                         <>
                           <Button
-                            onClick={() => startSimulation()}
+                            onClick={handleStartSimulation}
                             disabled={isRunning}
                             className="bg-blue-600 hover:bg-blue-700"
                           >
@@ -1271,7 +1405,7 @@ export default function SimulationEditor() {
                       </div>
                       {id && (
                         <Button
-                          onClick={() => startSimulation()}
+                          onClick={handleStartSimulation}
                           disabled={isRunning}
                           className="bg-blue-600 hover:bg-blue-700"
                         >
