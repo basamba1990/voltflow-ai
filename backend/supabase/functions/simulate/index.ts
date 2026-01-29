@@ -1,5 +1,5 @@
-// backend/supabase/functions/simulate/index.ts
 import { createClient } from "npm:@supabase/supabase-js@2.38.0"
+import { z } from "npm:zod@3.22.4" // Ajout de Zod pour validation
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,6 +8,29 @@ const corsHeaders = {
   'Access-Control-Allow-Credentials': 'true',
   'Vary': 'Origin'
 }
+
+// Schéma de validation des données d'entrée
+const SimulationRequestSchema = z.object({
+  simulation_id: z.string().uuid(),
+  config: z.object({
+    geometry_config: z.object({
+      file_url: z.string().url().optional(),
+      type: z.string(),
+      file_name: z.string().optional(),
+      dimensions: z.record(z.number()).optional()
+    }),
+    material_id: z.string().uuid(),
+    boundary_conditions: z.object({
+      initial_temp: z.number(),
+      ambient_temp: z.number(),
+      cooling_type: z.enum(['natural_convection', 'forced_convection', 'radiation']),
+      convection_coeff: z.number(),
+      fluid_type: z.enum(['air', 'water', 'oil']),
+      fluid_velocity: z.number()
+    }),
+    mesh_density: z.enum(['low', 'medium', 'high'])
+  })
+})
 
 const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms))
 
@@ -52,49 +75,137 @@ function generateVTKFile(config: any, temperatureData: number[]) {
   return vtkContent;
 }
 
-function formatResults(results: any, source: 'fastapi' | 'fallback') {
-  return { ...results, source, timestamp: new Date().toISOString() };
+function formatResults(results: any, source: 'fastapi' | 'fallback', tokenMetrics?: { prompt_tokens?: number, completion_tokens?: number }) {
+  return { 
+    ...results, 
+    source, 
+    timestamp: new Date().toISOString(),
+    token_metrics: tokenMetrics || {}
+  };
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: corsHeaders });
-  if (req.method !== 'POST') return new Response(JSON.stringify({ success: false, error: 'Method not allowed' }), { status: 405, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
+  // 1. CORS STRICT
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { 
+      status: 204, 
+      headers: corsHeaders 
+    });
+  }
+  
+  if (req.method !== 'POST') {
+    return new Response(
+      JSON.stringify({ 
+        success: false, 
+        error: 'Method not allowed' 
+      }), 
+      { 
+        status: 405, 
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+      }
+    );
+  }
 
   let simulationId: string | undefined = undefined;
-  const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
-  const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+  let userId: string | undefined = undefined;
 
   try {
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader?.startsWith('Bearer ')) throw new Error('Missing or invalid Authorization header');
+    const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
+    const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    // 2. AUTHENTICATION VALIDATION
+    const authHeader = req.headers.get('Authorization');
+    if (!authHeader?.startsWith('Bearer ')) {
+      throw new Error('Missing or invalid Authorization header');
+    }
+
+    const token = authHeader.replace('Bearer ', '');
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      console.error('❌ Authentication error:', authError);
+      throw new Error('Unauthorized');
+    }
+
+    userId = user.id;
+    console.log(`✅ Authenticated user: ${userId}`);
+
+    // 3. VALIDATION DU BODY AVEC ZOD
     const body = await req.json();
-    const { simulation_id: simId, config, user_id } = body;
+    
+    const validationResult = SimulationRequestSchema.safeParse(body);
+    if (!validationResult.success) {
+      console.error('❌ Schema validation error:', validationResult.error.errors);
+      throw new Error(`Invalid request data: ${validationResult.error.errors.map(e => `${e.path}: ${e.message}`).join(', ')}`);
+    }
+
+    const { simulation_id: simId, config } = validationResult.data;
     simulationId = simId;
 
-    if (!simId || !config || !user_id) throw new Error('Missing required fields: simulation_id, config, user_id');
+    console.log(`[Simulate] Starting simulation ${simId} for user ${userId}`);
 
-    console.log(`[Simulate] Starting simulation ${simId} for user ${user_id}`);
+    // 4. OWNERSHIP VALIDATION - Vérification stricte de propriété
+    const { data: simulation, error: simError } = await supabase
+      .from('simulations')
+      .select('user_id, status')
+      .eq('id', simId)
+      .single();
 
-    // --- 1. TENTATIVE BACKEND FASTAPI ---
+    if (simError || !simulation) {
+      console.error('❌ Simulation not found or error:', simError);
+      throw new Error('Simulation not found');
+    }
+
+    if (simulation.user_id !== userId) {
+      console.error(`❌ Ownership mismatch: simulation user ${simulation.user_id} vs authenticated user ${userId}`);
+      throw new Error('Forbidden: Simulation ownership mismatch');
+    }
+
+    // Vérifier le statut de la simulation
+    if (simulation.status === 'running') {
+      throw new Error('Simulation is already running');
+    }
+
+    // Mise à jour du statut de la simulation
+    await supabase
+      .from('simulations')
+      .update({
+        status: 'running',
+        progress: 10,
+        started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', simId)
+      .eq('user_id', userId);
+
+    // --- 5. TENTATIVE BACKEND FASTAPI ---
     const FASTAPI_URL = Deno.env.get('FASTAPI_URL') || 'https://voltflow-ai.onrender.com';
     let backendResults = null;
+    let tokenMetrics = null;
     
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 25000); // 25s timeout for FastAPI
+      const timeoutId = setTimeout(() => controller.abort(), 22000); // 22s timeout pour FastAPI
 
       const fastApiRes = await fetch(`${FASTAPI_URL}/api/v1/simulate/thermal`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': authHeader // Passe le même token
+        },
         body: JSON.stringify({
           simulation_id: simId,
+          user_id: userId,
           geometry_file: config.geometry_config?.file_url || 'default.stl',
           material_id: config.material_id,
           boundary_conditions: {
             initial: config.boundary_conditions?.initial_temp || 25.0,
             boundary: config.boundary_conditions?.ambient_temp || 100.0,
+            cooling_type: config.boundary_conditions?.cooling_type,
+            convection_coeff: config.boundary_conditions?.convection_coeff,
+            fluid_type: config.boundary_conditions?.fluid_type,
+            fluid_velocity: config.boundary_conditions?.fluid_velocity
           },
           mesh_density: config.mesh_density || 'medium',
         }),
@@ -104,17 +215,25 @@ Deno.serve(async (req: Request) => {
 
       if (fastApiRes.ok) {
         const fastApiData = await fastApiRes.json();
-        backendResults = formatResults(fastApiData.results, 'fastapi');
+        backendResults = formatResults(fastApiData.results, 'fastapi', fastApiData.token_metrics);
+        tokenMetrics = fastApiData.token_metrics;
       }
     } catch (err) {
       console.warn(`[Simulate] Backend failed: ${err.message}. Using fallback...`);
     }
 
-    // --- 2. FALLBACK ---
+    // --- 6. FALLBACK ---
     let finalResults;
     if (backendResults) {
       finalResults = backendResults;
     } else {
+      // Mise à jour de la progression
+      await supabase
+        .from('simulations')
+        .update({ progress: 30 })
+        .eq('id', simId)
+        .eq('user_id', userId);
+
       const meshDensity = config.mesh_density || 'medium';
       let dimensions: [number, number, number] = [30, 30, 30], spacing: [number, number, number] = [3.33, 3.33, 3.33];
       if (meshDensity === 'low') { dimensions = [20, 20, 20]; spacing = [5, 5, 5]; }
@@ -122,13 +241,36 @@ Deno.serve(async (req: Request) => {
 
       const { points, temperatureValues } = generateStructuredMesh(dimensions, spacing);
       const vtkContent = generateVTKFile({ dimensions, spacing }, temperatureValues);
-      const fileName = `simulation_${simId}_${Date.now()}.vtk`;
-      const filePath = `${user_id}/${fileName}`;
+      
+      // 🔒 CORRECTION CRITIQUE: Nom de fichier unique avec userId
+      const timestamp = Date.now();
+      const uniqueId = Math.random().toString(36).substring(2, 9);
+      const fileName = `${userId}/results_${timestamp}_${uniqueId}.vtk`;
+      const filePath = `${fileName}`;
 
-      const { error: uploadError } = await supabase.storage.from('simulation-files').upload(filePath, vtkContent, { contentType: 'text/plain' });
-      if (uploadError) throw new Error(`Failed to upload VTK: ${uploadError.message}`);
+      const { error: uploadError } = await supabase.storage
+        .from('simulation-files')
+        .upload(filePath, vtkContent, { 
+          contentType: 'text/vtk',
+          cacheControl: '3600',
+          upsert: false
+        });
+      
+      if (uploadError) {
+        console.error('❌ Upload VTK failed:', uploadError);
+        throw new Error(`Failed to upload VTK: ${uploadError.message}`);
+      }
 
-      const { data: urlData } = supabase.storage.from('simulation-files').getPublicUrl(filePath);
+      const { data: urlData } = supabase.storage
+        .from('simulation-files')
+        .getPublicUrl(filePath);
+
+      // Mise à jour de la progression
+      await supabase
+        .from('simulations')
+        .update({ progress: 70 })
+        .eq('id', simId)
+        .eq('user_id', userId);
 
       finalResults = formatResults({
         vtk_file_url: urlData.publicUrl,
@@ -138,43 +280,102 @@ Deno.serve(async (req: Request) => {
         computation_time: dimensions[0] * dimensions[1] * dimensions[2] * 0.01,
         uncertainty_score: Math.random() * 0.15,
         convergence_rate: 0.95 + Math.random() * 0.04,
-        temperature_field: { values: temperatureValues, units: '°C', resolution: dimensions },
+        temperature_field: { 
+          values: temperatureValues, 
+          units: '°C', 
+          resolution: dimensions,
+          points: points 
+        },
         mesh_points: dimensions[0] * dimensions[1] * dimensions[2],
+        file_name: fileName,
+        file_size: new Blob([vtkContent]).size
       }, 'fallback');
     }
 
-    // --- 3. PERSISTENCE ---
-    await supabase.from('simulation_results').insert({
-      simulation_id: simId,
-      temperature_data: finalResults.temperature_field,
-      max_temperature: finalResults.max_temperature,
-      min_temperature: finalResults.min_temperature,
-      uncertainty_score: finalResults.uncertainty_score,
-      result_files: { vtk_url: finalResults.vtk_file_url, source: finalResults.source }
-    });
+    // --- 7. PERSISTENCE DES RÉSULTATS ---
+    // 🔒 CORRECTION CRITIQUE: Validation de propriété avant insertion
+    await supabase
+      .from('simulation_results')
+      .insert({
+        simulation_id: simId,
+        user_id: userId, // Ajout de user_id pour traçabilité
+        temperature_data: finalResults.temperature_field,
+        max_temperature: finalResults.max_temperature,
+        min_temperature: finalResults.min_temperature,
+        average_temperature: finalResults.average_temperature,
+        uncertainty_score: finalResults.uncertainty_score,
+        convergence_rate: finalResults.convergence_rate,
+        computation_time: finalResults.computation_time,
+        result_files: { 
+          vtk_url: finalResults.vtk_file_url, 
+          source: finalResults.source,
+          file_name: finalResults.file_name,
+          file_size: finalResults.file_size
+        },
+        token_metrics: finalResults.token_metrics || {},
+        mesh_info: {
+          points: finalResults.mesh_points,
+          resolution: finalResults.temperature_field?.resolution
+        }
+      });
 
-    await supabase.from('simulations').update({
-      status: 'completed',
-      progress: 100,
-      completed_at: new Date().toISOString()
-    }).eq('id', simId);
+    // Mise à jour finale de la simulation
+    await supabase
+      .from('simulations')
+      .update({
+        status: 'completed',
+        progress: 100,
+        completed_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', simId)
+      .eq('user_id', userId); // 🔒 Double vérification de propriété
 
-    return new Response(JSON.stringify({ success: true, results: finalResults }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    return new Response(
+      JSON.stringify({ 
+        success: true, 
+        simulation_id: simId,
+        status: 'completed',
+        results: finalResults,
+        message: 'Simulation completed successfully'
+      }), 
+      {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      }
+    );
 
   } catch (error: any) {
     console.error(`[CRITICAL] ${error.message}`);
-    if (simulationId) {
-      await supabase.from('simulations').update({
-        status: 'failed',
-        error_message: error.message,
-        completed_at: new Date().toISOString()
-      }).eq('id', simulationId);
+    
+    // Mise à jour du statut d'erreur avec vérification de propriété
+    if (simulationId && userId) {
+      try {
+        await supabase
+          .from('simulations')
+          .update({
+            status: 'failed',
+            error_message: error.message.substring(0, 500), // Limiter la longueur
+            completed_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', simulationId)
+          .eq('user_id', userId); // 🔒 Vérification de propriété
+      } catch (updateError) {
+        console.error('Failed to update simulation status:', updateError);
+      }
     }
-    return new Response(JSON.stringify({ success: false, error: error.message }), {
-      status: 500,
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-    });
+    
+    return new Response(
+      JSON.stringify({ 
+        success: false, 
+        simulation_id: simulationId,
+        status: 'failed',
+        error: error.message 
+      }), 
+      {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      }
+    );
   }
 });
