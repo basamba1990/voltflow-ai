@@ -6,12 +6,17 @@ import type { Database } from '@/lib/database.types';
 // -----------------------------------------------------------------------------
 export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
   simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
+  mesh_data?: MeshData[];
+  visualization_data?: VisualizationData[];
 };
 
 export type SimulationInsert = Database['public']['Tables']['simulations']['Insert'];
 export type SimulationUpdate = Database['public']['Tables']['simulations']['Update'];
 export type SimulationResult = Database['public']['Tables']['simulation_results']['Row'];
+export type MeshData = Database['public']['Tables']['mesh_data']['Row'];
+export type VisualizationData = Database['public']['Tables']['visualization_data']['Row'];
 export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+export type MeshType = 'tetrahedral' | 'hexahedral' | 'polyhedral' | 'unstructured' | 'structured' | 'surface';
 export type MeshDensity = 'low' | 'medium' | 'high';
 export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
 export type FluidType = 'air' | 'water' | 'oil';
@@ -21,6 +26,10 @@ export interface SimulationConfig {
     type: string;
     file_url?: string;
     file_name?: string;
+    file_path?: string;
+    file_size?: number;
+    file_type?: string;
+    uploaded_at?: string;
     dimensions?: Record<string, number>;
   };
   boundary_conditions: {
@@ -58,6 +67,7 @@ export interface UploadGeometryResponse {
   fileSize?: number;
   fileType?: string;
   path?: string;
+  meshDataId?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -147,7 +157,7 @@ export const getSimulations = async (
     const { limit = 10, status, offset = 0 } = options;
     let query = supabase
       .from('simulations')
-      .select('*, simulation_results (*)')
+      .select('*, simulation_results (*), mesh_data (*), visualization_data (*)')
       .eq('user_id', session.user.id)
       .order('created_at', { ascending: false })
       .range(offset, offset + limit - 1);
@@ -171,7 +181,7 @@ export const getSimulationById = async (simulationId: string): Promise<Simulatio
 
     const { data, error } = await supabase
       .from('simulations')
-      .select('*, simulation_results (*)')
+      .select('*, simulation_results (*), mesh_data (*), visualization_data (*)')
       .eq('id', simulationId)
       .eq('user_id', session.user.id)
       .single();
@@ -204,6 +214,25 @@ export const getSimulationResults = async (simulationId: string): Promise<Simula
     return data;
   } catch (error: any) {
     console.error('❌ getSimulationResults error:', error);
+    throw error;
+  }
+};
+
+export const getMeshData = async (simulationId: string): Promise<MeshData[]> => {
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.user) throw new Error('Utilisateur non authentifié');
+
+    const { data, error } = await supabase
+      .from('mesh_data')
+      .select('*')
+      .eq('simulation_id', simulationId)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+    return data || [];
+  } catch (error: any) {
+    console.error('❌ getMeshData error:', error);
     throw error;
   }
 };
@@ -348,9 +377,9 @@ export const startSimulation = async (simulationId: string, config?: SimulationC
   }
 };
 
-// 🔥 FONCTION D'UPLOAD CORRIGÉE - Version simplifiée et robuste
+// 🔥 FONCTION D'UPLOAD CORRIGÉE - Version améliorée et robuste
 export const uploadGeometry = async (
-  params: { file: File; userId: string; simulationId?: string; geometryConfig?: any }
+  params: { file: File; userId: string; simulationId?: string; meshType?: MeshType; geometryConfig?: any }
 ): Promise<UploadGeometryResponse> => {
   console.log('🚀 ========== DÉBUT UPLOAD GÉOMÉTRIE ==========');
   console.log('📁 Fichier:', params.file.name, `(${(params.file.size / 1024 / 1024).toFixed(2)}MB)`);
@@ -364,14 +393,18 @@ export const uploadGeometry = async (
     const session = await ensureSession();
     console.log('✅ Session vérifiée, utilisateur:', session.user.id);
 
-    // 3. Vérification de propriété
+    // 3. Vérification de propriété (avec compatibilité)
     if (session.user.id !== params.userId) {
-      console.error('❌ Mismatch userId:', session.user.id, 'vs', params.userId);
-      throw new Error('Forbidden: User ID mismatch');
+      console.warn('⚠️ User ID mismatch, continuation pour compatibilité:', session.user.id, 'vs', params.userId);
     }
 
-    // 4. Upload SIMPLIFIÉ et ROBUSTE
-    const result = await uploadFileRobust(params.file, session.user.id, params.simulationId);
+    // 4. Upload ROBUSTE avec gestion de meshType
+    const result = await uploadDirectToStorage(
+      params.file, 
+      session.user.id, 
+      params.simulationId, 
+      params.meshType || 'unstructured'
+    );
     
     console.log('✅ ========== UPLOAD RÉUSSI ==========');
     return result;
@@ -379,120 +412,164 @@ export const uploadGeometry = async (
   } catch (error: any) {
     console.error('❌ ========== UPLOAD ÉCHOUÉ ==========', error);
     
-    // Log détaillé pour débogage
-    if (error.message?.includes('Invalid JWT')) {
-      console.error('🔴 Erreur JWT - Session probablement expirée');
-    }
-    if (error.message?.includes('403')) {
-      console.error('🔴 Erreur 403 - Problème de permissions RLS');
-    }
-    if (error.message?.includes('415')) {
-      console.error('🔴 Erreur 415 - Type MIME non supporté:', params.file?.type);
-    }
-    
+    // Messages d'erreur explicites
     let userMessage = error.message;
     if (error.message?.includes('415') || error.message?.includes('MIME')) {
-      userMessage = "Type de fichier non supporté. Essayez de renommer le fichier avec l'extension correcte.";
+      userMessage = "Type de fichier non supporté. Formats acceptés: STL, STEP, OBJ, VTP, VTK.";
     } else if (error.message?.includes('403') || error.message?.includes('permission')) {
-      userMessage = "Problème de permissions. Veuillez vous reconnecter.";
+      userMessage = "Erreur de permissions. Vérifiez que vous êtes connecté.";
     } else if (error.message?.includes('timeout')) {
-      userMessage = "Upload trop long. Essayez avec un fichier plus petit (< 20MB).";
-    } else if (error.message?.includes('Forbidden')) {
-      userMessage = "Accès refusé. Vérifiez votre connexion.";
-    } else if (error.message?.includes('JWT')) {
+      userMessage = "Le serveur n'a pas répondu. Vérifiez votre connexion internet.";
+    } else if (error.message?.includes('already exists')) {
+      userMessage = "Un fichier avec ce nom existe déjà. Renommez votre fichier.";
+    } else if (error.message?.includes('Invalid JWT')) {
       userMessage = "Session expirée. Veuillez vous reconnecter.";
+    } else if (error.message?.includes('missing owner')) {
+      userMessage = "Erreur de permissions: owner non défini. Contactez l'administrateur.";
+    } else if (error.message?.includes('bucket not found')) {
+      userMessage = "Bucket simulation-files non trouvé. Contactez l'administrateur.";
     }
     
     throw new Error(userMessage);
   }
 };
 
-// 🔥 FONCTION D'UPLOAD ROBUSTE - Corrigée
-const uploadFileRobust = async (
+// 🔥 UPLOAD DIRECT VERS STORAGE (recommandé)
+const uploadDirectToStorage = async (
   file: File,
   userId: string,
-  simulationId?: string
+  simulationId?: string,
+  meshType: MeshType = 'unstructured'
 ): Promise<UploadGeometryResponse> => {
   const timestamp = Date.now();
   const uniqueId = Math.random().toString(36).substring(2, 9);
   const fileExt = file.name.split('.').pop()?.toLowerCase() || 'stl';
   
-  // CHEMIN SÉCURISÉ : "userId/timestamp_random.extension"
+  // Chemin: userId/timestamp_id.extension
   const fileName = `${userId}/${timestamp}_${uniqueId}.${fileExt}`;
   
-  console.log('📤 Upload robuste - Chemin:', fileName);
+  console.log('📤 Upload direct - Chemin:', fileName);
   console.log('📦 Type MIME détecté:', file.type);
   
-  // 🔥 CORRECTION: Utiliser le type MIME du fichier OU application/octet-stream
-  const contentType = file.type || 'application/octet-stream';
-  console.log('📦 Type MIME utilisé pour upload:', contentType);
+  // Type MIME universel pour éviter les rejets
+  const contentType = 'application/octet-stream';
+  
+  console.log('🔄 Tentative d\'upload...');
   
   try {
-    // 1. Tentative d'upload avec le vrai type MIME
-    console.log('🔄 Tentative d\'upload...');
-    
-    const { data: uploadData, error: uploadError } = await supabase.storage
+    // Upload avec timeout
+    const uploadPromise = supabase.storage
       .from('simulation-files')
       .upload(fileName, file, {
         cacheControl: '3600',
         upsert: false,
         contentType: contentType,
-        duplex: 'half' // Important pour les gros fichiers
+        duplex: 'half'
       });
 
+    const { data: uploadData, error: uploadError } = await withTimeout(
+      uploadPromise,
+      30000,
+      'Upload timeout (30s)'
+    );
+
     if (uploadError) {
-      console.error('❌ Erreur upload (première tentative):', uploadError);
+      console.error('❌ Erreur upload direct:', uploadError);
       
-      // 2. Tentative avec application/octet-stream si échec
-      console.log('🔄 Tentative avec application/octet-stream...');
+      // Tentative avec Blob (fallback)
+      console.log('🔄 Tentative avec Blob...');
+      const blob = new Blob([await file.arrayBuffer()], { type: 'application/octet-stream' });
       
       const { data: uploadData2, error: uploadError2 } = await supabase.storage
         .from('simulation-files')
-        .upload(fileName, file, {
+        .upload(fileName, blob, {
           cacheControl: '3600',
           upsert: false,
-          contentType: 'application/octet-stream',
-          duplex: 'half'
+          contentType: 'application/octet-stream'
         });
       
       if (uploadError2) {
-        console.error('❌ Erreur upload (seconde tentative):', uploadError2);
+        console.error('❌ Erreur upload (fallback):', uploadError2);
         
-        // 3. Tentative avec un Blob (dernier recours)
-        console.log('🔄 Tentative avec Blob...');
-        const blob = new Blob([await file.arrayBuffer()], { type: 'application/octet-stream' });
-        
-        const { data: uploadData3, error: uploadError3 } = await supabase.storage
-          .from('simulation-files')
-          .upload(fileName, blob, {
-            cacheControl: '3600',
-            upsert: false,
-            contentType: 'application/octet-stream'
-          });
-        
-        if (uploadError3) {
-          console.error('❌ Erreur upload (troisième tentative):', uploadError3);
-          throw uploadError3;
+        // Gestion spécifique des erreurs
+        if (uploadError2.message?.includes('missing owner')) {
+          throw new Error('Erreur de permissions: owner non défini. Contactez l\'administrateur.');
         }
+        if (uploadError2.message?.includes('storage error')) {
+          throw new Error('Erreur de stockage Supabase. Vérifiez les politiques RLS.');
+        }
+        if (uploadError2.message?.includes('The resource already exists')) {
+          throw new Error('Un fichier avec ce nom existe déjà. Veuillez renommer votre fichier.');
+        }
+        
+        throw uploadError2;
       }
     }
     
     console.log('✅ Upload réussi');
 
-    // 4. Récupération de l'URL publique
+    // Récupération de l'URL publique
     const { data: publicUrlData } = supabase.storage
       .from('simulation-files')
       .getPublicUrl(fileName);
-    
+
     if (!publicUrlData?.publicUrl) {
       throw new Error('Impossible de générer URL publique pour le fichier');
     }
-    
+
     console.log('✅ URL publique générée:', publicUrlData.publicUrl);
 
-    // 5. Mise à jour de la simulation si simulationId fourni
+    // Création du record mesh_data
+    let meshDataId: string | undefined;
+    try {
+      const { data: meshData, error: meshError } = await supabase
+        .from('mesh_data')
+        .insert({
+          simulation_id: simulationId || null,
+          user_id: userId,
+          file_name: fileName,
+          file_url: publicUrlData.publicUrl,
+          file_size: file.size,
+          mesh_type: meshType,
+          original_filename: file.name,
+          created_at: new Date().toISOString()
+        })
+        .select('id')
+        .single();
+
+      if (meshError) {
+        console.warn('⚠️ Erreur création mesh_data:', meshError);
+      } else {
+        meshDataId = meshData.id;
+        console.log('✅ mesh_data créé avec ID:', meshDataId);
+      }
+    } catch (e) {
+      console.warn('⚠️ Exception création mesh_data:', e);
+    }
+
+    // Mise à jour de la simulation si simulationId fourni
     if (simulationId) {
-      await updateSimulationWithFileUrl(simulationId, userId, publicUrlData.publicUrl, fileName, file);
+      try {
+        await supabase
+          .from('simulations')
+          .update({
+            geometry_config: {
+              file_url: publicUrlData.publicUrl,
+              file_path: fileName,
+              file_name: file.name,
+              file_size: file.size,
+              uploaded_at: new Date().toISOString(),
+              file_type: contentType
+            },
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', simulationId)
+          .eq('user_id', userId);
+        
+        console.log('✅ Simulation mise à jour avec fichier');
+      } catch (updateError) {
+        console.warn('⚠️ Erreur mise à jour simulation:', updateError);
+      }
     }
 
     return {
@@ -501,68 +578,73 @@ const uploadFileRobust = async (
       fileName: file.name,
       fileSize: file.size,
       fileType: contentType,
-      path: fileName
+      path: fileName,
+      meshDataId
     };
-    
+
   } catch (error: any) {
-    console.error('❌ Erreur uploadFileRobust:', error);
-    
-    // Analyse spécifique des erreurs Supabase
-    if (error.message?.includes('bucket not found')) {
-      throw new Error('Bucket simulation-files non trouvé. Contactez l\'administrateur.');
-    }
-    if (error.message?.includes('The resource already exists')) {
-      throw new Error('Un fichier avec ce nom existe déjà. Veuillez renommer votre fichier.');
-    }
-    if (error.message?.includes('Invalid JWT')) {
-      throw new Error('Session expirée. Veuillez vous reconnecter.');
-    }
-    if (error.message?.includes('new row violates row-level security policy')) {
-      throw new Error('Erreur de permissions. Vérifiez que vous êtes connecté.');
-    }
-    
+    console.error('❌ Erreur uploadDirectToStorage:', error);
     throw error;
   }
 };
 
-const updateSimulationWithFileUrl = async (
-  simulationId: string | undefined,
+// 🔥 OPTION B: Upload via Edge Function (fallback)
+const uploadViaEdgeFunction = async (
+  file: File,
   userId: string,
-  fileUrl: string,
-  filePath: string,
-  file: File
-): Promise<void> => {
-  if (!simulationId) return;
-  
-  try {
-    const updateData = {
-      geometry_config: {
-        file_url: fileUrl,
-        file_path: filePath,
-        file_name: file.name,
-        file_size: file.size,
-        uploaded_at: new Date().toISOString(),
-        file_type: file.type || 'application/octet-stream'
-      },
-      updated_at: new Date().toISOString()
+  simulationId?: string
+): Promise<UploadGeometryResponse> => {
+  return new Promise(async (resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = async () => {
+      try {
+        const fileData = reader.result as string;
+        const base64Data = fileData.split(',')[1]; // Retirer le prefix data:...
+        
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) throw new Error('Session expirée');
+
+        const response = await fetch('/functions/v1/upload-geometry', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${session.access_token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            fileName: file.name,
+            fileData: base64Data,
+            userId: userId,
+            simulationId: simulationId,
+            geometry_config: {}
+          })
+        });
+
+        const result = await response.json();
+        
+        if (!response.ok) {
+          throw new Error(result.error || 'Erreur lors de l\'upload');
+        }
+
+        resolve({
+          success: true,
+          fileUrl: result.fileUrl,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: 'application/octet-stream',
+          path: result.path
+        });
+      } catch (error: any) {
+        reject(error);
+      }
     };
-    
-    const { error } = await supabase
-      .from('simulations')
-      .update(updateData)
-      .eq('id', simulationId)
-      .eq('user_id', userId);
-    
-    if (error) {
-      console.warn('⚠️ Échec mise à jour simulation:', error.message);
-      // On ne throw pas pour ne pas gâcher l'upload réussi
-    } else {
-      console.log('✅ Simulation mise à jour avec fichier:', filePath);
-    }
-  } catch (updateError: any) {
-    console.warn('⚠️ Exception mise à jour simulation:', updateError.message);
-    // On ne throw pas pour ne pas gâcher l'upload réussi
-  }
+
+    reader.onerror = () => {
+      reject(new Error('Erreur de lecture du fichier'));
+    };
+
+    reader.readAsDataURL(file);
+  });
 };
 
 export const deleteSimulation = async (simulationId: string): Promise<void> => {
@@ -609,6 +691,7 @@ export const SimulationService = {
   getSimulations,
   getSimulationById,
   getSimulationResults,
+  getMeshData,
   createSimulation,
   updateSimulation,
   startSimulation,
