@@ -159,7 +159,6 @@ export default function SimulationEditor() {
   const prepareViewerData = useMemo(() => {
     if (!results) return null;
 
-    // Préparation des champs de données
     const fields: IndustrialField[] = [];
     if (results.temperature_field && results.temperature_field.values) {
       const tempValues = results.temperature_field.values;
@@ -180,7 +179,6 @@ export default function SimulationEditor() {
       });
     }
 
-    // Configuration du viewer
     const config: Partial<IndustrialConfig> = {
       max_memory_mb: 2048,
       target_fps: 60,
@@ -193,7 +191,6 @@ export default function SimulationEditor() {
       annotations: true,
     };
 
-    // Légende
     const legend: IndustrialLegend = {
       type: 'scientific',
       min: fields[0]?.min || 0,
@@ -231,9 +228,7 @@ export default function SimulationEditor() {
     };
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
-  // --------------------------------------------------------------------------
-  // 🔥 GESTION DES FICHIERS - VERSION COMPATIBLE AVEC LE NOUVEAU SERVICE
-  // --------------------------------------------------------------------------
+  // 🔥 GESTION DES FICHIERS - VERSION CORRIGÉE
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     // Reset complet avant nouvel upload
     setUploadingFile(true);
@@ -277,14 +272,14 @@ export default function SimulationEditor() {
     try {
       console.log('🚀 Début upload:', file.name);
       
-      // 🔥 CORRECTION : Timeout ABSOLU de 45 secondes
+      // 🔥 Timeout ABSOLU de 45 secondes
       const timeoutPromise = new Promise<never>((_, reject) => {
         uploadTimeoutRef.current = setTimeout(() => {
           reject(new Error('Upload timeout: 45 secondes dépassées'));
         }, 45000);
       });
 
-      // Simulation de progression avec phases claires
+      // Simulation de progression
       const progressInterval = setInterval(() => {
         setUploadProgress(prev => {
           if (prev < 80) {
@@ -298,7 +293,7 @@ export default function SimulationEditor() {
         });
       }, 500);
 
-      // 🔥 UPLOAD VIA LE SERVICE MIS À JOUR
+      // 🔥 UPLOAD VIA LE SERVICE
       const uploadPromise = (async () => {
         try {
           console.log('🔄 Tentative upload via SimulationService...');
@@ -333,7 +328,7 @@ export default function SimulationEditor() {
           
           toast.success('✅ Fichier téléchargé avec succès');
           
-          // 🔥 IMPORTANT : Rafraîchir la simulation pour inclure les mesh_data
+          // 🔥 Rafraîchir la simulation pour inclure les mesh_data
           if (id) {
             setTimeout(() => {
               refresh();
