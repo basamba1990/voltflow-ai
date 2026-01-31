@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
-import { Save, Play, Download, Trash2, Thermometer, Loader2, AlertCircle, ChevronLeft, UploadCloud, Box, Settings, Eye, EyeOff, Grid3X3, Maximize2, Minimize2, Copy, FileUp, CheckCircle, XCircle, TestTube, ShieldAlert } from 'lucide-react';
+import { Save, Play, Download, Thermometer, Loader2, AlertCircle, ChevronLeft, UploadCloud, Box, Settings, Eye, Maximize2, Minimize2, Copy, TestTube, ShieldAlert, CheckCircle } from 'lucide-react';
 
 // Services et hooks
 import SimulationService from '@/services/simulation.service';
@@ -30,7 +30,7 @@ import type { IndustrialField, IndustrialConfig, IndustrialLegend, UnitSystem } 
 export default function SimulationEditor() {
   const [, setLocation] = useLocation();
   const { id } = useParams<{ id: string }>();
-  const { simulation, results, isRunning, progress, startSimulation: startSimulationHook, refresh } = useSimulation(id || '', {
+  const { simulation, results, isRunning, progress, refresh } = useSimulation(id || '', {
     realtime: true,
   });
   
@@ -199,7 +199,7 @@ export default function SimulationEditor() {
     };
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
-  // GESTION DES FICHIERS - VERSION CORRIGÉE
+  // GESTION DES FICHIERS
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     // Reset complet avant nouvel upload
     setUploadingFile(true);
@@ -264,7 +264,7 @@ export default function SimulationEditor() {
         });
       }, 500);
 
-      // Upload via le service corrigé
+      // Upload via le service
       const uploadPromise = (async () => {
         try {
           console.log('🔄 Tentative upload via SimulationService...');
@@ -328,8 +328,10 @@ export default function SimulationEditor() {
         errorMessage = "Erreur de permissions. Contactez l'administrateur.";
       } else if (errorMessage.includes('timeout')) {
         errorMessage = "Le serveur n'a pas confirmé l'upload. Réessayez.";
-      } else if (errorMessage.includes('already exists')) {
+      } else if (errorMessage.includes('already exists') || errorMessage.includes('Duplicate')) {
         errorMessage = "Un fichier avec ce nom existe déjà. Renommez votre fichier.";
+      } else if (errorMessage.includes('413') || errorMessage.includes('too large')) {
+        errorMessage = "Fichier trop volumineux. Taille maximum: 50MB";
       }
       
       setUploadError(errorMessage);
@@ -443,7 +445,7 @@ export default function SimulationEditor() {
     }
   };
 
-  // FONCTION START SIMULATION CORRIGÉE
+  // FONCTION START SIMULATION
   const handleStartSimulation = async () => {
     if (!id) {
       toast.error('ID de simulation manquant');
