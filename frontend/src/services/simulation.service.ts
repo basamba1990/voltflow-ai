@@ -41,18 +41,26 @@ export interface StartSimulationResponse {
   simulation_id: string;
   status: SimulationStatus;
   results?: any;
+  message?: string;
+}
+
+export interface UploadGeometryResponse {
+  success: boolean;
+  fileUrl: string;
+  fileName: string;
+  fileSize?: number;
+  path?: string;
 }
 
 // -----------------------------------------------------------------------------
-// SERVICES DE RÉCUPÉRATION ET CRÉATION
+// FONCTIONS EXPORTÉES
 // -----------------------------------------------------------------------------
 
 export const getSimulations = async () => {
   const { data, error } = await supabase
     .from('simulations')
-    .select('*, simulation_results(*)')
+    .select('*, simulation_results (*)')
     .order('created_at', { ascending: false });
-
   if (error) throw error;
   return data as Simulation[];
 };
@@ -60,61 +68,102 @@ export const getSimulations = async () => {
 export const getSimulationById = async (id: string) => {
   const { data, error } = await supabase
     .from('simulations')
-    .select('*, simulation_results(*)')
+    .select('*, simulation_results (*)')
     .eq('id', id)
     .single();
-
   if (error) throw error;
   return data as Simulation;
 };
 
-export const createSimulation = async (simulation: Omit<Database['public']['Tables']['simulations']['Insert'], 'id' | 'created_at' | 'updated_at'>) => {
+export const createSimulation = async (params: { 
+  name: string; 
+  description?: string; 
+  geometryType: string; 
+  config: SimulationConfig 
+}) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentification requise');
+
   const { data, error } = await supabase
     .from('simulations')
-    .insert(simulation)
+    .insert({
+      user_id: session.user.id,
+      name: params.name,
+      description: params.description,
+      geometry_type: params.geometryType,
+      geometry_config: params.config.geometry_config,
+      boundary_conditions: params.config.boundary_conditions as any,
+      material_id: params.config.material_id,
+      mesh_density: params.config.mesh_density,
+      solver_type: params.config.solver_type || 'fem_fortran',
+      status: 'pending'
+    })
     .select()
     .single();
-
   if (error) throw error;
-  return data as Simulation;
+  return data;
 };
 
-export const startSimulation = async (id: string): Promise<StartSimulationResponse> => {
+export const updateSimulation = async (id: string, params: { 
+  name: string; 
+  description?: string; 
+  geometryType: string; 
+  config: SimulationConfig 
+}) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentification requise');
+
+  const { data, error } = await supabase
+    .from('simulations')
+    .update({
+      name: params.name,
+      description: params.description,
+      geometry_type: params.geometryType,
+      geometry_config: params.config.geometry_config,
+      boundary_conditions: params.config.boundary_conditions as any,
+      material_id: params.config.material_id,
+      mesh_density: params.config.mesh_density,
+      solver_type: params.config.solver_type || 'fem_fortran',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+};
+
+export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentification requise');
+
   const { data, error } = await supabase.functions.invoke('run-simulation', {
-    body: { simulationId: id }
+    body: { simulationId }
   });
 
   if (error) throw error;
   return data;
 };
 
-// -----------------------------------------------------------------------------
-// SERVICE D'UPLOAD CORRIGÉ (Cœur du problème)
-// -----------------------------------------------------------------------------
-
-/**
- * Télécharge un fichier de géométrie vers Supabase Storage.
- * Gère automatiquement les utilisateurs non-connectés via le dossier 'anonymous'.
- */
 export const uploadGeometry = async (params: { 
-  file: File, 
-  simulationId?: string 
-}) => {
-  // 1. Détermination de l'identité (ne bloque plus si user est null)
+  file: File; 
+  simulationId?: string;
+}): Promise<UploadGeometryResponse> => {
+  // Détermination de l'identité (utilisateur connecté ou anonyme)
   const { data: { session } } = await supabase.auth.getSession();
   const folder = session?.user?.id || 'anonymous';
 
-  // 2. Nettoyage du nom de fichier (suppression espaces et caractères spéciaux)
-  const fileExt = params.file.name.split('.').pop();
+  // Nettoyage du nom de fichier
+  const fileExt = params.file.name.split('.').pop()?.toLowerCase();
   const safeName = params.file.name
-    .replace(/[^\x00-\x7F]/g, "") // Enlever non-ASCII
-    .replace(/\s+/g, "_")          // Remplacer espaces par _
-    .replace(/[^a-zA-Z0-9._-]/g, ""); // Sécurité supplémentaire
+    .replace(/[^\x00-\x7F]/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/[^a-zA-Z0-9._-]/g, "");
 
   const fileName = `${folder}/${Date.now()}_${safeName}`;
 
-  // 3. Upload vers le bucket 'geometries'
-  const { error: uploadError } = await supabase.storage
+  // Upload vers le bucket 'geometries'
+  const { data, error } = await supabase.storage
     .from('geometries')
     .upload(fileName, params.file, {
       cacheControl: '3600',
@@ -122,19 +171,19 @@ export const uploadGeometry = async (params: {
       contentType: params.file.type || 'application/octet-stream'
     });
 
-  if (uploadError) {
-    console.error("Erreur détaillée Storage:", uploadError);
-    throw new Error(`Échec de l'upload: ${uploadError.message}`);
+  if (error) {
+    console.error("Erreur d'upload:", error);
+    throw new Error(`Échec de l'upload: ${error.message}`);
   }
 
-  // 4. Récupération de l'URL publique
+  // Récupération de l'URL publique
   const { data: { publicUrl } } = supabase.storage
     .from('geometries')
     .getPublicUrl(fileName);
 
-  // 5. Mise à jour optionnelle de la table simulation
+  // Mise à jour optionnelle de la simulation
   if (params.simulationId) {
-    const { error: updateError } = await supabase
+    await supabase
       .from('simulations')
       .update({
         geometry_config: {
@@ -142,12 +191,11 @@ export const uploadGeometry = async (params: {
           file_name: params.file.name,
           file_size: params.file.size,
           file_path: fileName,
-          type: fileExt?.toLowerCase() || 'stl'
-        }
+          type: fileExt || 'stl'
+        },
+        updated_at: new Date().toISOString()
       })
       .eq('id', params.simulationId);
-    
-    if (updateError) throw updateError;
   }
 
   return {
@@ -158,10 +206,6 @@ export const uploadGeometry = async (params: {
     path: fileName
   };
 };
-
-// -----------------------------------------------------------------------------
-// SERVICES DE GESTION ET TEMPS RÉEL
-// -----------------------------------------------------------------------------
 
 export const deleteSimulation = async (id: string) => {
   const { error } = await supabase.from('simulations').delete().eq('id', id);
@@ -180,19 +224,18 @@ export const subscribeToSimulation = (id: string, callback: (payload: any) => vo
 };
 
 export const unsubscribeFromChannel = (channel: any) => {
-  if (channel) {
-    supabase.removeChannel(channel);
-  }
+  if (channel) supabase.removeChannel(channel);
 };
 
 // -----------------------------------------------------------------------------
-// EXPORT UNIQUE
+// DEFAULT EXPORT
 // -----------------------------------------------------------------------------
 
 export const SimulationService = {
   getSimulations,
   getSimulationById,
   createSimulation,
+  updateSimulation,
   startSimulation,
   uploadGeometry,
   deleteSimulation,
