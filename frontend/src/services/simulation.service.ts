@@ -82,12 +82,13 @@ export const createSimulation = async (params: {
   config: SimulationConfig 
 }) => {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
+  // Utiliser user_id si connecté, sinon null
+  const userId = session?.user?.id || null;
 
   const { data, error } = await supabase
     .from('simulations')
     .insert({
-      user_id: session.user.id,
+      user_id: userId, // Peut être null
       name: params.name,
       description: params.description,
       geometry_type: params.geometryType,
@@ -110,9 +111,6 @@ export const updateSimulation = async (id: string, params: {
   geometryType: string; 
   config: SimulationConfig 
 }) => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
-
   const { data, error } = await supabase
     .from('simulations')
     .update({
@@ -134,15 +132,25 @@ export const updateSimulation = async (id: string, params: {
 };
 
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
+  // NE PAS vérifier l'authentification - permettre l'utilisation sans connexion
+  try {
+    console.log('🚀 Lancement de la simulation:', simulationId);
+    
+    const { data, error } = await supabase.functions.invoke('run-simulation', {
+      body: { simulationId }
+    });
 
-  const { data, error } = await supabase.functions.invoke('run-simulation', {
-    body: { simulationId }
-  });
-
-  if (error) throw error;
-  return data;
+    if (error) {
+      console.error('❌ Erreur lors de l\'appel à la fonction edge:', error);
+      throw error;
+    }
+    
+    return data;
+    
+  } catch (error: any) {
+    console.error('❌ Erreur startSimulation:', error);
+    throw error;
+  }
 };
 
 export const uploadGeometry = async (params: { 
