@@ -82,26 +82,37 @@ export const createSimulation = async (params: {
   config: SimulationConfig 
 }) => {
   const { data: { session } } = await supabase.auth.getSession();
-  // Utiliser user_id si connecté, sinon null
-  const userId = session?.user?.id || null;
+  
+  // Préparer les données d'insertion
+  const simulationData: any = {
+    name: params.name,
+    description: params.description,
+    geometry_type: params.geometryType,
+    geometry_config: params.config.geometry_config,
+    boundary_conditions: params.config.boundary_conditions as any,
+    material_id: params.config.material_id,
+    mesh_density: params.config.mesh_density,
+    solver_type: params.config.solver_type || 'fem_fortran',
+    status: 'pending'
+  };
+
+  // Ajouter user_id seulement si l'utilisateur est connecté
+  // (colonne nullable dans la base de données)
+  if (session?.user?.id) {
+    simulationData.user_id = session.user.id;
+  }
 
   const { data, error } = await supabase
     .from('simulations')
-    .insert({
-      user_id: userId, // Peut être null
-      name: params.name,
-      description: params.description,
-      geometry_type: params.geometryType,
-      geometry_config: params.config.geometry_config,
-      boundary_conditions: params.config.boundary_conditions as any,
-      material_id: params.config.material_id,
-      mesh_density: params.config.mesh_density,
-      solver_type: params.config.solver_type || 'fem_fortran',
-      status: 'pending'
-    })
+    .insert(simulationData)
     .select()
     .single();
-  if (error) throw error;
+    
+  if (error) {
+    console.error('❌ Erreur création simulation:', error);
+    throw error;
+  }
+  
   return data;
 };
 
@@ -132,7 +143,6 @@ export const updateSimulation = async (id: string, params: {
 };
 
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
-  // NE PAS vérifier l'authentification - permettre l'utilisation sans connexion
   try {
     console.log('🚀 Lancement de la simulation:', simulationId);
     
@@ -170,8 +180,10 @@ export const uploadGeometry = async (params: {
 
   const fileName = `${folder}/${Date.now()}_${safeName}`;
 
+  console.log('📤 Tentative d\'upload vers:', fileName);
+
   // Upload vers le bucket 'geometries'
-  const { data, error } = await supabase.storage
+  const { data: uploadData, error: uploadError } = await supabase.storage
     .from('geometries')
     .upload(fileName, params.file, {
       cacheControl: '3600',
@@ -179,10 +191,23 @@ export const uploadGeometry = async (params: {
       contentType: params.file.type || 'application/octet-stream'
     });
 
-  if (error) {
-    console.error("Erreur d'upload:", error);
-    throw new Error(`Échec de l'upload: ${error.message}`);
+  if (uploadError) {
+    console.error("❌ Erreur d'upload détaillée:", uploadError);
+    
+    // Messages d'erreur spécifiques
+    let errorMessage = uploadError.message;
+    if (uploadError.message.includes('413')) {
+      errorMessage = 'Fichier trop volumineux. Taille maximum: 50MB';
+    } else if (uploadError.message.includes('403')) {
+      errorMessage = 'Permission refusée. Contactez l\'administrateur.';
+    } else if (uploadError.message.includes('Duplicate')) {
+      errorMessage = 'Un fichier avec ce nom existe déjà.';
+    }
+    
+    throw new Error(errorMessage);
   }
+
+  console.log('✅ Upload réussi, récupération URL...');
 
   // Récupération de l'URL publique
   const { data: { publicUrl } } = supabase.storage
@@ -191,7 +216,9 @@ export const uploadGeometry = async (params: {
 
   // Mise à jour optionnelle de la simulation
   if (params.simulationId) {
-    await supabase
+    console.log('🔄 Mise à jour de la simulation:', params.simulationId);
+    
+    const { error: updateError } = await supabase
       .from('simulations')
       .update({
         geometry_config: {
@@ -204,6 +231,11 @@ export const uploadGeometry = async (params: {
         updated_at: new Date().toISOString()
       })
       .eq('id', params.simulationId);
+
+    if (updateError) {
+      console.warn('⚠️ Erreur lors de la mise à jour simulation:', updateError);
+      // Ne pas échouer complètement si seulement la mise à jour échoue
+    }
   }
 
   return {
