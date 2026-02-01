@@ -163,12 +163,13 @@ export const uploadGeometry = async (params: {
   const fileName = `${folder}/${Date.now()}_${safeName}`;
 
   // Upload vers le bucket 'geometries'
+  // 🔥 CORRECTION CHATGPT : Forcer application/octet-stream pour éviter les erreurs 415 sur les fichiers 3D
   const { data, error } = await supabase.storage
     .from('geometries')
     .upload(fileName, params.file, {
       cacheControl: '3600',
       upsert: false,
-      contentType: params.file.type || 'application/octet-stream'
+      contentType: 'application/octet-stream'
     });
 
   if (error) {
