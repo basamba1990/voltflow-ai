@@ -53,7 +53,7 @@ export interface UploadGeometryResponse {
 }
 
 // -----------------------------------------------------------------------------
-// FONCTIONS EXPORTÉES
+// FONCTIONS EXPORTÉES - VERSIONS CORRIGÉES
 // -----------------------------------------------------------------------------
 
 export const getSimulations = async () => {
@@ -133,25 +133,32 @@ export const updateSimulation = async (id: string, params: {
   return data;
 };
 
+// ✅ CORRECTION CRITIQUE: Payload Edge Function corrigé
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.user) throw new Error('Authentification requise');
 
-  const { data, error } = await supabase.functions.invoke('run-simulation', {
-    body: { simulationId }
+  // ✅ CORRECTION: simulationId (pas simulation_id) - MATCH AVEC EDGE FUNCTION
+  const { data, error } = await supabase.functions.invoke('simulate', {
+    body: { simulationId }  // <-- CORRECT - Edge Function attend simulationId
   });
 
-  if (error) throw error;
+  if (error) {
+    console.error('[SimulationService] Erreur Edge Function:', error);
+    throw error;
+  }
+  
   return data;
 };
 
+// ✅ CORRECTION CRITIQUE: Bucket unifié simulation-files
 export const uploadGeometry = async (params: { 
   file: File; 
   simulationId?: string;
 }): Promise<UploadGeometryResponse> => {
-  // Détermination de l'identité (utilisateur connecté ou anonyme)
   const { data: { session } } = await supabase.auth.getSession();
-  const folder = session?.user?.id || 'anonymous';
+  const userId = session?.user?.id || 'anonymous';
+  const folder = userId;
 
   // Nettoyage du nom de fichier
   const fileExt = params.file.name.split('.').pop()?.toLowerCase();
@@ -162,41 +169,49 @@ export const uploadGeometry = async (params: {
 
   const fileName = `${folder}/${Date.now()}_${safeName}`;
 
-  // Upload vers le bucket 'geometries'
-  // 🔥 CORRECTION CHATGPT : Forcer application/octet-stream pour éviter les erreurs 415 sur les fichiers 3D
-  const { data, error } = await supabase.storage
-    .from('geometries')
+  // ✅ CORRECTION: Upload vers simulation-files (même bucket que l'Edge Function)
+  const { data: uploadData, error: uploadError } = await supabase.storage
+    .from('simulation-files')  // <-- CHANGÉ DE 'geometries' À 'simulation-files'
     .upload(fileName, params.file, {
       cacheControl: '3600',
       upsert: false,
       contentType: 'application/octet-stream'
     });
 
-  if (error) {
-    console.error("Erreur d'upload:", error);
-    throw new Error(`Échec de l'upload: ${error.message}`);
+  if (uploadError) {
+    console.error("[SimulationService] Erreur d'upload:", uploadError);
+    throw new Error(`Échec de l'upload: ${uploadError.message}`);
   }
 
-  // Récupération de l'URL publique
+  // ✅ CORRECTION: Récupération URL depuis simulation-files
   const { data: { publicUrl } } = supabase.storage
-    .from('geometries')
+    .from('simulation-files')  // <-- CHANGÉ DE 'geometries' À 'simulation-files'
     .getPublicUrl(fileName);
 
-  // Mise à jour optionnelle de la simulation
+  // ✅ CORRECTION: Mise à jour simulation avec structure geometry_config attendue par l'Edge Function
   if (params.simulationId) {
-    await supabase
-      .from('simulations')
-      .update({
-        geometry_config: {
-          file_url: publicUrl,
-          file_name: params.file.name,
-          file_size: params.file.size,
-          file_path: fileName,
-          type: fileExt || 'stl'
-        },
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', params.simulationId);
+    try {
+      const { error: updateError } = await supabase
+        .from('simulations')
+        .update({
+          geometry_config: {
+            file_url: publicUrl,
+            file_name: params.file.name,
+            file_size: params.file.size,
+            file_path: fileName,
+            type: fileExt || 'stl'
+          },
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', params.simulationId);
+
+      if (updateError) {
+        console.warn(`[SimulationService] Erreur update simulation: ${updateError.message}`);
+        // Ne pas échouer l'upload pour ça
+      }
+    } catch (updateErr) {
+      console.warn(`[SimulationService] Erreur lors de la mise à jour: ${updateErr}`);
+    }
   }
 
   return {
@@ -229,10 +244,80 @@ export const unsubscribeFromChannel = (channel: any) => {
 };
 
 // -----------------------------------------------------------------------------
-// DEFAULT EXPORT
+// FONCTIONS UTILITAIRES AJOUTÉES
+// -----------------------------------------------------------------------------
+
+export const getSimulationProgress = async (simulationId: string) => {
+  const { data, error } = await supabase
+    .from('simulations')
+    .select('progress, status, started_at, completed_at')
+    .eq('id', simulationId)
+    .single();
+  
+  if (error) throw error;
+  return data;
+};
+
+export const cancelSimulation = async (simulationId: string) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentification requise');
+
+  const { error } = await supabase
+    .from('simulations')
+    .update({
+      status: 'cancelled',
+      completed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', simulationId)
+    .eq('user_id', session.user.id);
+
+  if (error) throw error;
+  return { success: true };
+};
+
+export const uploadGeometryViaEdgeFunction = async (params: {
+  file: File;
+  simulationId: string;
+  geometry_config?: any;
+}): Promise<UploadGeometryResponse> => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentification requise');
+
+  // Convertir le fichier en base64
+  const arrayBuffer = await params.file.arrayBuffer();
+  const base64Data = btoa(
+    new Uint8Array(arrayBuffer).reduce(
+      (data, byte) => data + String.fromCharCode(byte),
+      ''
+    )
+  );
+
+  // Appeler l'Edge Function upload-geometry
+  const { data, error } = await supabase.functions.invoke('upload-geometry', {
+    body: {
+      fileName: params.file.name,
+      fileData: base64Data,
+      userId: session.user.id,
+      simulationId: params.simulationId,
+      geometry_config: params.geometry_config || {}
+    }
+  });
+
+  if (error) {
+    console.error('[SimulationService] Erreur Edge Function upload-geometry:', error);
+    throw error;
+  }
+
+  return data;
+};
+
+// -----------------------------------------------------------------------------
+// DEFAULT EXPORT - VERSION COMPLÈTE CORRIGÉE
 // -----------------------------------------------------------------------------
 
 export const SimulationService = {
+  // Fonctions principales
   getSimulations,
   getSimulationById,
   createSimulation,
@@ -240,6 +325,13 @@ export const SimulationService = {
   startSimulation,
   uploadGeometry,
   deleteSimulation,
+  
+  // Fonctions utilitaires
+  getSimulationProgress,
+  cancelSimulation,
+  uploadGeometryViaEdgeFunction,
+  
+  // Abonnements
   subscribeToSimulation,
   unsubscribeFromChannel
 };
