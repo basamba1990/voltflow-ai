@@ -7,7 +7,7 @@ CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 -- 2. CREATE TABLES
-CREATE TABLE IF NOT EXISTS public.users (
+CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     email TEXT UNIQUE NOT NULL,
     full_name TEXT,
@@ -30,13 +30,13 @@ CREATE TABLE IF NOT EXISTS public.materials (
     melting_point REAL,
     color_hex TEXT,
     is_public BOOLEAN DEFAULT true,
-    created_by UUID REFERENCES public.users(id),
+    created_by UUID REFERENCES public.profiles(id),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS public.simulations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
     description TEXT,
     geometry_type TEXT NOT NULL,
@@ -82,13 +82,13 @@ CREATE TABLE IF NOT EXISTS public.simulation_metrics (
 
 CREATE TABLE IF NOT EXISTS public.support_tickets (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     subject TEXT NOT NULL,
     description TEXT NOT NULL,
     category TEXT NOT NULL,
     status TEXT DEFAULT 'open',
     priority TEXT DEFAULT 'medium',
-    assigned_to UUID REFERENCES public.users(id),
+    assigned_to UUID REFERENCES public.profiles(id),
     resolution TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -96,7 +96,7 @@ CREATE TABLE IF NOT EXISTS public.support_tickets (
 );
 
 -- 3. ENABLE ROW LEVEL SECURITY
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.materials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.simulations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.simulation_results ENABLE ROW LEVEL SECURITY;
@@ -104,9 +104,9 @@ ALTER TABLE public.simulation_metrics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.support_tickets ENABLE ROW LEVEL SECURITY;
 
 -- 4. POLICIES
-CREATE POLICY "Users can view own profile" ON public.users FOR SELECT USING (auth.uid() = id);
-CREATE POLICY "Users can update own profile" ON public.users FOR UPDATE USING (auth.uid() = id);
-CREATE POLICY "Service role can manage all users" ON public.users FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+CREATE POLICY "Users can view own profile" ON public.profiles FOR SELECT USING (auth.uid() = id);
+CREATE POLICY "Users can update own profile" ON public.profiles FOR UPDATE USING (auth.uid() = id);
+CREATE POLICY "Service role can manage all users" ON public.profiles FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
 
 CREATE POLICY "Users can view own simulations" ON public.simulations FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "Users can create simulations" ON public.simulations FOR INSERT WITH CHECK (auth.uid() = user_id);
@@ -129,7 +129,7 @@ BEGIN
 END;
 $$ language 'plpgsql';
 
-CREATE TRIGGER update_users_updated_at BEFORE UPDATE ON public.users FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+CREATE TRIGGER update_profiles_updated_at BEFORE UPDATE ON public.profiles FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 CREATE TRIGGER update_simulations_updated_at BEFORE UPDATE ON public.simulations FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- 6. STORAGE
