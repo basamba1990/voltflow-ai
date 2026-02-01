@@ -34,8 +34,11 @@ Deno.serve(async (req: Request) => {
     const body = await req.json()
     const { fileName, fileData, userId, simulationId, geometry_config } = body
 
-    if (!fileName || !fileData || !userId) {
-      return new Response(JSON.stringify({ success: false, error: 'Missing required fields' }), {
+    if (!fileName || !fileData || !userId || !simulationId) {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: 'Missing required fields: fileName, fileData, userId, simulationId' 
+      }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       })
@@ -55,46 +58,37 @@ Deno.serve(async (req: Request) => {
       })
     }
 
-    // 4. INITIALISATION CLIENT SUPABASE (SERVICE ROLE)
+    // 4. INITIALISATION CLIENT SUPABASE
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL')
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')
+    
     if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
       throw new Error('Variables d\'environnement manquantes')
     }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-    // 5. DÉCODAGE DES DONNÉES BINAIRES (BASE64)
+    // 5. DÉCODAGE BASE64 → BINARY
     const binaryString = atob(fileData)
     const bytes = new Uint8Array(binaryString.length)
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i)
     }
 
-    // 6. GÉNÉRATION DU CHEMIN UNIQUE
+    // 6. GÉNÉRATION CHEMIN UNIQUE
     const timestamp = Date.now()
     const uniqueId = Math.random().toString(36).substring(2, 9)
     const uniquePath = `${userId}/${timestamp}_${uniqueId}_${fileName}`
 
-    // 7. 🔥 CORRECTION CRITIQUE: Forcer owner pour contourner RLS
+    // 7. UPLOAD VERS simulation-files (BUCKET UNIFIÉ)
     const fileBlob = new Blob([bytes], { type: 'application/octet-stream' })
     
-    // 🔥 Utiliser form-data pour passer owner explicitement
-    const formData = new FormData()
-    formData.append('file', fileBlob, fileName)
-    
-    // Upload avec metadata owner
     const { error: uploadError } = await supabase.storage
-      .from('simulation-files')  // 🔥 Changé de 'geometries' à 'simulation-files'
+      .from('simulation-files')
       .upload(uniquePath, fileBlob, {
         contentType: 'application/octet-stream',
         upsert: false,
-        // 🔥 Metadata pour owner
-        metadata: {
-          owner: userId,
-          uploaded_by: userId,
-          simulation_id: simulationId || 'none'
-        }
+        cacheControl: '3600'
       })
 
     if (uploadError) {
@@ -102,60 +96,36 @@ Deno.serve(async (req: Request) => {
       throw new Error(`Erreur Storage: ${uploadError.message}`)
     }
 
-    // 8. GÉNÉRATION D'UNE URL PUBLIQUE (bucket public)
-    const { data: urlData, error: urlError } = await supabase.storage
+    // 8. GÉNÉRATION URL PUBLIQUE
+    const { data: urlData } = supabase.storage
       .from('simulation-files')
       .getPublicUrl(uniquePath)
 
-    if (urlError) {
-      throw new Error(`Erreur URL: ${urlError.message}`)
-    }
-
     const fileUrl = urlData.publicUrl
 
-    // 9. MISE À JOUR DE LA SIMULATION
-    if (simulationId) {
-      const { error: updateError } = await supabase
-        .from('simulations')
-        .update({
-          geometry_config: {
-            ...geometry_config,
-            file_url: fileUrl,
-            file_path: uniquePath,
-            file_name: fileName,
-            file_size: bytes.length,
-            uploaded_at: new Date().toISOString(),
-            file_type: 'application/octet-stream'
-          },
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', simulationId)
-        .eq('user_id', userId)
-
-      if (updateError) {
-        console.warn(`[Upload] Erreur update simulation: ${updateError.message}`)
-      }
-    }
-
-    // 10. CRÉATION DU RECORD mesh_data
-    try {
-      await supabase
-        .from('mesh_data')
-        .insert({
-          simulation_id: simulationId || null,
-          user_id: userId,
-          file_name: uniquePath,
+    // 9. MISE À JOUR SIMULATION (CORRIGÉ)
+    const { error: updateError } = await supabase
+      .from('simulations')
+      .update({
+        geometry_config: {
+          ...(geometry_config || {}),  // ✅ CORRECTION CRITIQUE
           file_url: fileUrl,
+          file_path: uniquePath,
+          file_name: fileName,
           file_size: bytes.length,
-          mesh_type: 'unstructured',
-          original_filename: fileName,
-          created_at: new Date().toISOString()
-        })
-    } catch (meshError: any) {
-      console.warn(`[Upload] Erreur création mesh_data: ${meshError.message}`)
+          uploaded_at: new Date().toISOString(),
+          file_type: 'application/octet-stream'
+        },
+        updated_at: new Date().toISOString()
+      })
+      .eq('id', simulationId)  // ✅ SUPPRIMÉ .eq('user_id', userId)
+
+    if (updateError) {
+      console.error('❌ Erreur mise à jour simulation:', updateError)
+      throw new Error(`Erreur DB: ${updateError.message}`)
     }
 
-    // 11. RÉPONSE SUCCÈS
+    // 10. RÉPONSE SUCCÈS
     return new Response(JSON.stringify({
       success: true,
       fileUrl: fileUrl,
@@ -169,13 +139,11 @@ Deno.serve(async (req: Request) => {
     })
 
   } catch (error: any) {
-    console.error(`[UploadGeometry] Erreur critique: ${error.message}`)
+    console.error('[UploadGeometry] Erreur:', error.message)
     
-    // 🔥 Retourner des informations détaillées pour le débogage
     return new Response(JSON.stringify({ 
       success: false, 
-      error: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      error: error.message
     }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
