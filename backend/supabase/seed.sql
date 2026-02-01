@@ -13,7 +13,7 @@ INSERT INTO auth.users (id, email) VALUES
   ('11111111-1111-1111-1111-111111111111', 'test@voltflow.ai')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO public.profiles (id, email, full_name, role, subscription_plan, simulations_limit) VALUES
+INSERT INTO public.profiles (id, email, first_name, role, subscription_plan, simulations_limit) VALUES
   ('11111111-1111-1111-1111-111111111111', 'test@voltflow.ai', 'Test Engineer', 'engineer', 'professional', 100)
 ON CONFLICT (id) DO NOTHING;
 
