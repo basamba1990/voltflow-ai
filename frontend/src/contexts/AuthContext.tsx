@@ -4,8 +4,8 @@ import { Session } from '@supabase/supabase-js';
 import { Database } from '@/lib/database.types';
 import { toast } from 'sonner';
 
-// Utiliser 'users' pour correspondre à la table réelle
-type Profile = Database['public']['Tables']['users']['Row'];
+// Utiliser 'profiles' pour les données utilisateur (recommandé par Supabase)
+type Profile = Database['public']['Tables']['profiles']['Row'];
 
 interface AuthContextType {
   user: Session['user'] | null;
@@ -72,7 +72,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     const { error: profileError } = await supabase
-      .from('users')
+      .from('profiles')
       .insert(profileData);
       
     if (profileError && profileError.code !== '23505') {
@@ -87,14 +87,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!userData.id) return null;
     try {
       const { data: existingProfile, error: profileError } = await supabase
-        .from('users')
+        .from('profiles')
         .select('*')
         .eq('id', userData.id)
         .single();
 
       if (profileError) {
         if (profileError.code === 'PGRST116') {
-          console.log('Table users non trouvée, création...');
+          console.log('Table profiles non trouvée, création...');
           return await createUserProfile(userData);
         }
         console.error('❌ Erreur récupération profil:', profileError);
@@ -112,7 +112,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       if (!user?.id) throw new Error('Utilisateur non connecté');
       const { data, error } = await supabase
-        .from('users')
+        .from('profiles')
         .update({
           ...updates,
           updated_at: new Date().toISOString()
