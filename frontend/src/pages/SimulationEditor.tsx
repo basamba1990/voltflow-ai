@@ -243,11 +243,11 @@ export default function SimulationEditor() {
     try {
       console.log('🚀 Début upload:', file.name);
       
-      // Timeout absolu de 45 secondes
+      // Timeout absolu de 120 secondes (pour les gros fichiers 3D)
       const timeoutPromise = new Promise<never>((_, reject) => {
         uploadTimeoutRef.current = setTimeout(() => {
-          reject(new Error('Upload timeout: 45 secondes dépassées'));
-        }, 45000);
+          reject(new Error('timeout'));
+        }, 120000);
       });
 
       // Simulation de progression
@@ -327,7 +327,7 @@ export default function SimulationEditor() {
       } else if (errorMessage.includes('403') || errorMessage.includes('permission')) {
         errorMessage = "Erreur de permissions. Contactez l'administrateur.";
       } else if (errorMessage.includes('timeout')) {
-        errorMessage = "Le serveur n'a pas confirmé l'upload. Réessayez.";
+        errorMessage = "L'upload a expiré (limite de 120s). Vérifiez votre connexion ou essayez un fichier plus léger.";
       } else if (errorMessage.includes('already exists')) {
         errorMessage = "Un fichier avec ce nom existe déjà. Renommez votre fichier.";
       }
