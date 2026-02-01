@@ -1,67 +1,69 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { supabase } from "@/lib/supabase";
 import { toast } from "sonner";
-import { Loader2, CheckCircle, AlertCircle } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, User, Mail, Building } from "lucide-react";
 
 export default function AuthCallback() {
   const [, setLocation] = useLocation();
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const handleAuthCallback = async () => {
-      console.log("🔄 Traitement du callback d'authentification...");
+      console.log("🔄 Processing auth callback...");
 
       try {
-        // Récupérer la session depuis l'URL
+        // 1. Récupérer la session depuis l'URL
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
         if (sessionError) {
-          console.error("❌ Erreur de session:", sessionError);
-          toast.error("Erreur d'authentification", {
-            description: sessionError.message,
-          });
+          console.error("❌ Session error:", sessionError);
+          setError(sessionError.message);
+          toast.error("Authentication failed");
           setLocation("/login?error=auth_failed");
           return;
         }
 
-        if (session) {
-          console.log("✅ Session authentifiée détectée:", session.user.email);
+        if (!session) {
+          console.warn("⚠️ No session found");
+          setLocation("/login");
+          return;
+        }
+
+        console.log("✅ Session found for:", session.user.email);
+
+        // 2. Récupérer l'utilisateur complet
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        
+        if (userError) {
+          console.warn("⚠️ Could not get user details:", userError);
+        }
+
+        // 3. Afficher les informations utilisateur
+        if (user) {
+          console.log("👤 User metadata:", user.user_metadata);
           
-          // Récupérer les informations utilisateur complètes
-          const { data: { user }, error: userError } = await supabase.auth.getUser();
+          // Message de bienvenue personnalisé
+          const userName = user.user_metadata?.full_name || 
+                          user.user_metadata?.name || 
+                          `${user.user_metadata?.first_name || ''} ${user.user_metadata?.last_name || ''}`.trim() ||
+                          user.email;
           
-          if (userError) {
-            console.warn("⚠️ Impossible de récupérer les détails utilisateur:", userError);
-          } else if (user) {
-            console.log("👤 Informations utilisateur:", {
-              email: user.email,
-              name: user.user_metadata?.full_name || user.user_metadata?.name,
-              avatar: user.user_metadata?.avatar_url,
-              provider: user.app_metadata?.provider,
-            });
-            
-            // Afficher un message de bienvenue
-            toast.success("Authentification réussie !", {
-              description: `Bienvenue ${user.user_metadata?.first_name || user.user_metadata?.name || "Utilisateur"} !`,
-              duration: 3000,
-            });
-          }
-          
-          // Rediriger vers le dashboard après un court délai
+          toast.success(`Welcome ${userName}!`, {
+            description: "Authentication successful",
+            duration: 3000,
+          });
+
+          // 4. Rediriger vers le dashboard
           setTimeout(() => {
             setLocation("/dashboard");
-          }, 1500);
-          
-        } else {
-          console.warn("⚠️ Aucune session trouvée, redirection vers login");
-          setLocation("/login");
+          }, 1000);
         }
-        
+
       } catch (error: any) {
-        console.error("❌ Erreur inattendue:", error);
-        toast.error("Erreur lors de l'authentification", {
-          description: "Veuillez réessayer ou contacter le support.",
-        });
+        console.error("❌ Unexpected error:", error);
+        setError(error.message || "Unknown error");
+        toast.error("Authentication error");
         setLocation("/login?error=unexpected");
       }
     };
@@ -76,58 +78,42 @@ export default function AuthCallback() {
           <div className="w-20 h-20 mx-auto rounded-full bg-gradient-to-r from-blue-500 to-cyan-500 flex items-center justify-center">
             <Loader2 className="w-10 h-10 text-white animate-spin" />
           </div>
-          <div className="absolute -top-2 -right-2 animate-pulse">
-            <div className="w-8 h-8 rounded-full bg-green-500 flex items-center justify-center">
-              <CheckCircle className="w-5 h-5 text-white" />
-            </div>
-          </div>
         </div>
         
         <h1 className="text-2xl font-bold text-white mb-2">
-          Finalisation de l'authentification
+          Completing Authentication
         </h1>
-        <p className="text-gray-400 mb-6">
-          Nous vérifions vos informations de connexion...
-        </p>
         
-        <div className="space-y-4">
-          <div className="flex items-center justify-center gap-3 text-sm text-gray-300">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
-              <span>Vérification du token</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></div>
-              <span>Récupération du profil</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-              <span>Redirection</span>
-            </div>
+        {error ? (
+          <div className="mt-4 p-4 bg-red-900/20 rounded-lg border border-red-800">
+            <AlertCircle className="w-8 h-8 text-red-400 mx-auto mb-2" />
+            <p className="text-red-300">{error}</p>
+            <button
+              onClick={() => setLocation("/login")}
+              className="mt-3 text-sm text-blue-400 hover:text-blue-300 underline"
+            >
+              Return to login
+            </button>
           </div>
-          
-          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h3 className="text-sm font-semibold text-gray-300 mb-2">
-              Connexion sécurisée en cours
-            </h3>
-            <p className="text-xs text-gray-400">
-              Vos informations sont traitées de manière sécurisée via Supabase Auth.
-              Vous serez redirigé automatiquement vers votre tableau de bord.
+        ) : (
+          <div className="space-y-4">
+            <p className="text-gray-400 mb-6">
+              Please wait while we secure your session...
             </p>
+            
+            <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+              <div className="flex items-center justify-center gap-2 mb-3">
+                <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse"></div>
+                <div className="w-2 h-2 rounded-full bg-cyan-500 animate-pulse"></div>
+                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+              </div>
+              
+              <p className="text-sm text-gray-300">
+                Securely connecting to VoltFlow AI...
+              </p>
+            </div>
           </div>
-          
-          <div className="pt-4">
-            <p className="text-xs text-gray-500">
-              Si la redirection ne se fait pas automatiquement,{" "}
-              <button
-                onClick={() => setLocation("/dashboard")}
-                className="text-blue-400 hover:text-blue-300 underline"
-              >
-                cliquez ici
-              </button>
-            </p>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
