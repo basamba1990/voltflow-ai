@@ -174,6 +174,7 @@ export interface Database {
           methodology: string | null
           result_files: Json | null
           visualization_config: Json | null
+          user_id: string | null
           created_at: string
         }
         Insert: {
@@ -193,6 +194,7 @@ export interface Database {
           methodology?: string | null
           result_files?: Json | null
           visualization_config?: Json | null
+          user_id?: string | null
           created_at?: string
         }
         Update: {
@@ -212,6 +214,7 @@ export interface Database {
           methodology?: string | null
           result_files?: Json | null
           visualization_config?: Json | null
+          user_id?: string | null
           created_at?: string
         }
       }
