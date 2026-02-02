@@ -345,7 +345,7 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       throw new Error('La simulation est déjà en cours');
     }
 
-    // Appeler l'Edge Function 'simulate' (renommée de 'run-simulation')
+    // Appeler l'Edge Function 'simulate' 
     console.log(`[SimulationService] Appel Edge Function simulate pour ${simulationId}`);
     
     const { data, error } = await supabase.functions.invoke('simulate', {
