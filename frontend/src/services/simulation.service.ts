@@ -86,120 +86,41 @@ export type MaterialId = typeof VALID_MATERIAL_IDS[number];
 
 // ✅ LANCER UNE SIMULATION - VERSION FINALE CORRIGÉE
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
-  try {
-    console.log(`[SimulationService] startSimulation: ${simulationId}`);
-
-    // Validation
-    if (!simulationId) {
-      return {
-        success: false,
-        simulation_id: simulationId,
-        status: 'failed',
-        error: 'Simulation ID is required'
-      };
-    }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) {
-      return {
-        success: false,
-        simulation_id: simulationId,
-        status: 'failed',
-        error: 'Authentication required. Please log in.'
-      };
-    }
-
-    // Vérifier que la simulation existe
-    const { data: simulation, error: fetchError } = await supabase
-      .from('simulations')
-      .select('id, user_id, status')
-      .eq('id', simulationId)
-      .single();
-
-    if (fetchError || !simulation) {
-      console.error(`[SimulationService] Simulation not found: ${fetchError?.message}`);
-      return {
-        success: false,
-        simulation_id: simulationId,
-        status: 'failed',
-        error: 'Simulation not found'
-      };
-    }
-
-    // Vérifier la propriété
-    if (simulation.user_id !== session.user.id) {
-      return {
-        success: false,
-        simulation_id: simulationId,
-        status: 'failed',
-        error: 'You do not have permission to run this simulation'
-      };
-    }
-
-    // Vérifier le statut
-    if (simulation.status === 'running') {
-      return {
-        success: false,
-        simulation_id: simulationId,
-        status: 'failed',
-        error: 'Simulation is already running'
-      };
-    }
-
-    console.log(`[SimulationService] Calling Edge Function 'simulate' for ${simulationId}`);
-
-    // ✅ CORRECTION CRITIQUE: Appel Edge Function simplifié
-    const { data, error } = await supabase.functions.invoke('simulate', {
-      body: { simulationId }
-      // ⚠️ NE PAS AJOUTER DE HEADERS MANUELLEMENT - Supabase les gère automatiquement
-    });
-
-    if (error) {
-      console.error('[SimulationService] Edge Function error:', error);
-      
-      // Gestion spécifique des erreurs
-      let errorMessage = error.message || 'Unknown error';
-      
-      if (error.message?.includes('Failed to fetch')) {
-        errorMessage = 'Network error. Please check your connection.';
-      } else if (error.message?.includes('404') || error.message?.includes('not found')) {
-        errorMessage = 'Simulation service not available. Please try again later.';
-      } else if (error.message?.includes('timeout')) {
-        errorMessage = 'Simulation timeout. Please try again.';
-      }
-
-      // Mettre à jour le statut en échec
-      await supabase
-        .from('simulations')
-        .update({
-          status: 'failed',
-          error_message: errorMessage.substring(0, 500),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', simulationId)
-        .eq('user_id', session.user.id);
-
-      return {
-        success: false,
-        simulation_id: simulationId,
-        status: 'failed',
-        error: errorMessage
-      };
-    }
-
-    console.log(`[SimulationService] Simulation ${simulationId} started successfully`);
-    return data;
-
-  } catch (error: any) {
-    console.error('[SimulationService] Critical error in startSimulation:', error);
-    
+  if (!simulationId) {
     return {
       success: false,
       simulation_id: simulationId,
       status: 'failed',
-      error: error.message || 'Failed to start simulation'
-    };
+      error: 'Invalid simulation ID'
+    }
   }
+
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.user) {
+    return {
+      success: false,
+      simulation_id: simulationId,
+      status: 'failed',
+      error: 'Authentication required'
+    }
+  }
+
+  // ✅ CORRECTION CRITIQUE: Supabase Functions gère déjà l'Authorization
+  const { data, error } = await supabase.functions.invoke('simulate', {
+    body: { simulationId }
+  })
+
+  if (error) {
+    console.error('[SimulationService] Edge Function error:', error);
+    return {
+      success: false,
+      simulation_id: simulationId,
+      status: 'failed',
+      error: error.message
+    }
+  }
+
+  return data
 };
 
 // ✅ UPLOAD GÉOMÉTRIE - VERSION SIMPLIFIÉE
@@ -352,33 +273,24 @@ export const getMaterialById = async (id: string): Promise<Material | null> => {
   return data as Material;
 };
 
-export const getSimulations = async () => {
+export const getSimulations = async (): Promise<Simulation[]> => {
   const { data, error } = await supabase
     .from('simulations')
-    .select(`
-      *,
-      simulation_results (*),
-      materials (*)
-    `)
-    .order('created_at', { ascending: false })
-    .limit(50);
-
+    .select('*, simulation_results(*), materials(*)')
+    .order('created_at', { ascending: false });
+  
   if (error) throw error;
   return data as Simulation[];
 };
 
-export const getSimulationById = async (id: string) => {
+export const getSimulationById = async (id: string): Promise<Simulation | null> => {
   const { data, error } = await supabase
     .from('simulations')
-    .select(`
-      *,
-      simulation_results (*),
-      materials (*)
-    `)
+    .select('*, simulation_results(*), materials(*)')
     .eq('id', id)
     .single();
-
-  if (error) throw error;
+  
+  if (error) return null;
   return data as Simulation;
 };
 
@@ -386,7 +298,7 @@ export const createSimulation = async (params: {
   name: string; 
   description?: string; 
   geometryType: string; 
-  config: SimulationConfig 
+  config: SimulationConfig;
 }) => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.user) throw new Error('Authentication required');
@@ -396,15 +308,17 @@ export const createSimulation = async (params: {
     .insert({
       user_id: session.user.id,
       name: params.name,
-      description: params.description,
+      description: params.description || null,
       geometry_type: params.geometryType,
       geometry_config: params.config.geometry_config || {},
-      boundary_conditions: params.config.boundary_conditions,
+      boundary_conditions: params.config.boundary_conditions || {},
       material_id: params.config.material_id,
-      mesh_density: params.config.mesh_density,
+      mesh_density: params.config.mesh_density || 'medium',
       solver_type: params.config.solver_type || 'fem_fortran',
       status: 'pending',
-      progress: 0
+      progress: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
     })
     .select()
     .single();
@@ -426,12 +340,12 @@ export const updateSimulation = async (id: string, params: {
     .from('simulations')
     .update({
       name: params.name,
-      description: params.description,
+      description: params.description || null,
       geometry_type: params.geometryType,
-      geometry_config: params.config.geometry_config,
-      boundary_conditions: params.config.boundary_conditions as any,
+      geometry_config: params.config.geometry_config || {},
+      boundary_conditions: params.config.boundary_conditions || {},
       material_id: params.config.material_id,
-      mesh_density: params.config.mesh_density,
+      mesh_density: params.config.mesh_density || 'medium',
       solver_type: params.config.solver_type || 'fem_fortran',
       updated_at: new Date().toISOString()
     })
@@ -472,30 +386,7 @@ export const unsubscribeFromChannel = (channel: any) => {
   if (channel) supabase.removeChannel(channel);
 };
 
-export const validateMaterialId = (materialId: string): boolean => {
-  return VALID_MATERIAL_IDS.includes(materialId as MaterialId);
-};
-
-export const getDefaultMaterial = (): MaterialId => {
-  return 'aluminum-6061';
-};
-
-export const checkSimulationExists = async (simulationId: string): Promise<boolean> => {
-  const { data, error } = await supabase
-    .from('simulations')
-    .select('id')
-    .eq('id', simulationId)
-    .single();
-
-  return !error && !!data;
-};
-
-// -----------------------------------------------------------------------------
-// EXPORT PAR DÉFAUT
-// -----------------------------------------------------------------------------
-
 export const SimulationService = {
-  // Fonctions principales
   getSimulations,
   getSimulationById,
   createSimulation,
@@ -503,18 +394,8 @@ export const SimulationService = {
   startSimulation,
   uploadGeometry,
   deleteSimulation,
-  
-  // Fonctions matériaux
   getMaterials,
   getMaterialById,
-  validateMaterialId,
-  getDefaultMaterial,
-  VALID_MATERIAL_IDS,
-  
-  // Fonctions utilitaires
-  checkSimulationExists,
-  
-  // Abonnements
   subscribeToSimulation,
   unsubscribeFromChannel
 };
