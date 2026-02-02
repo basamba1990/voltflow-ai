@@ -1,15 +1,32 @@
 import { supabase } from '@/lib/supabase';
 import type { Database } from '@/lib/database.types';
 
-// TYPES (inchangés)
+// -----------------------------------------------------------------------------
+// TYPES MIS À JOUR
+// -----------------------------------------------------------------------------
 export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
   simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
+  materials?: Database['public']['Tables']['materials']['Row'];
 };
 
 export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type MeshDensity = 'low' | 'medium' | 'high';
 export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
 export type FluidType = 'air' | 'water' | 'oil';
+
+// Interface pour les matériaux
+export interface Material {
+  id: string;  // TEXT - comme 'aluminum-6061', 'copper', etc.
+  name: string;
+  category?: string;
+  thermal_conductivity?: number;
+  specific_heat?: number;
+  density?: number;
+  melting_point?: number;
+  color_hex?: string;
+  is_public?: boolean;
+  properties?: any;
+}
 
 export interface SimulationConfig {
   geometry_config: {
@@ -28,7 +45,7 @@ export interface SimulationConfig {
     fluid_type: FluidType;
     fluid_velocity: number;
   };
-  material_id: string;
+  material_id: string;  // TEXT ID comme 'aluminum-6061'
   mesh_density: MeshDensity;
   solver_type?: string;
 }
@@ -52,13 +69,176 @@ export interface UploadGeometryResponse {
 }
 
 // -----------------------------------------------------------------------------
-// FONCTIONS CORRIGÉES
+// FONCTIONS POUR MATERIALS
 // -----------------------------------------------------------------------------
 
-// ✅ CORRECTION CRITIQUE: Appeler LA BONNE Edge Function
+// Récupérer tous les matériaux disponibles
+export const getMaterials = async (): Promise<Material[]> => {
+  const { data, error } = await supabase
+    .from('materials')
+    .select('*')
+    .order('name');
+  
+  if (error) {
+    console.error('[SimulationService] Erreur récupération matériaux:', error);
+    throw error;
+  }
+  
+  return data as Material[];
+};
+
+// Récupérer un matériau par son ID
+export const getMaterialById = async (id: string): Promise<Material | null> => {
+  const { data, error } = await supabase
+    .from('materials')
+    .select('*')
+    .eq('id', id)
+    .single();
+  
+  if (error) {
+    console.warn(`[SimulationService] Matériau ${id} non trouvé:`, error);
+    return null;
+  }
+  
+  return data as Material;
+};
+
+// Rechercher des matériaux par catégorie
+export const getMaterialsByCategory = async (category: string): Promise<Material[]> => {
+  const { data, error } = await supabase
+    .from('materials')
+    .select('*')
+    .eq('category', category)
+    .order('name');
+  
+  if (error) {
+    console.error(`[SimulationService] Erreur matériaux catégorie ${category}:`, error);
+    throw error;
+  }
+  
+  return data as Material[];
+};
+
+// -----------------------------------------------------------------------------
+// FONCTIONS PRINCIPALES CORRIGÉES
+// -----------------------------------------------------------------------------
+
+// ✅ Récupérer les simulations avec les matériaux
+export const getSimulations = async () => {
+  const { data, error } = await supabase
+    .from('simulations')
+    .select(`
+      *,
+      simulation_results (*),
+      materials (*)
+    `)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (error) throw error;
+  return data as Simulation[];
+};
+
+// ✅ Récupérer une simulation par ID avec son matériau
+export const getSimulationById = async (id: string) => {
+  if (!id || id === 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa') {
+    throw new Error('Invalid simulation ID');
+  }
+
+  const { data, error } = await supabase
+    .from('simulations')
+    .select(`
+      *,
+      simulation_results (*),
+      materials (*)
+    `)
+    .eq('id', id)
+    .single();
+
+  if (error) throw error;
+  return data as Simulation;
+};
+
+// ✅ Créer une simulation avec vérification du matériau
+export const createSimulation = async (params: { 
+  name: string; 
+  description?: string; 
+  geometryType: string; 
+  config: SimulationConfig 
+}) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentication required');
+
+  // Vérifier que le matériau existe
+  const material = await getMaterialById(params.config.material_id);
+  if (!material) {
+    throw new Error(`Material '${params.config.material_id}' does not exist. Use valid material ID like 'aluminum-6061'.`);
+  }
+
+  const { data, error } = await supabase
+    .from('simulations')
+    .insert({
+      user_id: session.user.id,
+      name: params.name.substring(0, 100),
+      description: params.description?.substring(0, 500),
+      geometry_type: params.geometryType,
+      geometry_config: params.config.geometry_config || {},
+      boundary_conditions: params.config.boundary_conditions,
+      material_id: params.config.material_id,  // TEXT ID
+      mesh_density: params.config.mesh_density,
+      solver_type: params.config.solver_type || 'fem_fortran',
+      status: 'pending'
+    })
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+// ✅ Mettre à jour une simulation
+export const updateSimulation = async (id: string, params: { 
+  name: string; 
+  description?: string; 
+  geometryType: string; 
+  config: SimulationConfig;
+}) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session?.user) throw new Error('Authentication required');
+
+  // Vérifier le matériau si fourni
+  if (params.config.material_id) {
+    const material = await getMaterialById(params.config.material_id);
+    if (!material) {
+      throw new Error(`Material '${params.config.material_id}' does not exist.`);
+    }
+  }
+
+  const { data, error } = await supabase
+    .from('simulations')
+    .update({
+      name: params.name,
+      description: params.description,
+      geometry_type: params.geometryType,
+      geometry_config: params.config.geometry_config,
+      boundary_conditions: params.config.boundary_conditions as any,
+      material_id: params.config.material_id,
+      mesh_density: params.config.mesh_density,
+      solver_type: params.config.solver_type || 'fem_fortran',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', id)
+    .eq('user_id', session.user.id)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+};
+
+// ✅ Lancer une simulation
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
   try {
-    // VÉRIFICATION UUID
     if (!simulationId || simulationId === 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa') {
       throw new Error('Invalid simulation ID. Please create a valid simulation first.');
     }
@@ -70,7 +250,6 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
 
     console.log('[SimulationService] Starting simulation:', simulationId);
 
-    // ✅ CORRECTION: Appeler 'simulate' et non 'run-simulation'
     const { data, error } = await supabase.functions.invoke('simulate', {
       body: { 
         simulationId 
@@ -83,7 +262,6 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
     if (error) {
       console.error('[SimulationService] Edge Function error:', error);
       
-      // Gestion des erreurs spécifiques
       if (error.message?.includes('404') || error.message?.includes('not found')) {
         throw new Error('Simulation function not found. Please contact support.');
       }
@@ -106,7 +284,7 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
   }
 };
 
-// ✅ CORRECTION: Upload avec retry et meilleure gestion d'erreurs
+// ✅ Upload de géométrie
 export const uploadGeometry = async (params: { 
   file: File; 
   simulationId?: string;
@@ -120,16 +298,14 @@ export const uploadGeometry = async (params: {
       throw new Error('You must be logged in to upload files');
     }
 
-    // Validation fichier
     if (!params.file) {
       throw new Error('No file provided');
     }
 
-    if (params.file.size > 50 * 1024 * 1024) { // 50MB
+    if (params.file.size > 50 * 1024 * 1024) {
       throw new Error('File size exceeds 50MB limit');
     }
 
-    // Nettoyage nom
     const fileExt = params.file.name.toLowerCase().split('.').pop() || 'stl';
     const allowedExtensions = ['stl', 'step', 'stp', 'obj', 'iges', 'igs', 'vtp', 'vti', 'ply', 'vtk'];
     
@@ -144,12 +320,8 @@ export const uploadGeometry = async (params: {
 
     const fileName = `${userId}/${Date.now()}_${safeName}`;
 
-    // Callback progression
-    if (params.onProgress) {
-      params.onProgress(10);
-    }
+    if (params.onProgress) params.onProgress(10);
 
-    // ✅ CORRECTION: Upload avec timeout
     const uploadPromise = supabase.storage
       .from('simulation-files')
       .upload(fileName, params.file, {
@@ -158,7 +330,6 @@ export const uploadGeometry = async (params: {
         contentType: 'application/octet-stream'
       });
 
-    // Timeout après 60 secondes
     const timeoutPromise = new Promise((_, reject) => {
       setTimeout(() => reject(new Error('Upload timeout after 60 seconds')), 60000);
     });
@@ -181,16 +352,12 @@ export const uploadGeometry = async (params: {
       throw new Error(`Upload failed: ${uploadError.message}`);
     }
 
-    if (params.onProgress) {
-      params.onProgress(70);
-    }
+    if (params.onProgress) params.onProgress(70);
 
-    // Récupération URL
     const { data: { publicUrl } } = supabase.storage
       .from('simulation-files')
       .getPublicUrl(fileName);
 
-    // Mise à jour simulation si ID fourni
     if (params.simulationId) {
       try {
         const { error: updateError } = await supabase
@@ -210,16 +377,13 @@ export const uploadGeometry = async (params: {
 
         if (updateError) {
           console.warn('[SimulationService] Warning: Could not update simulation record:', updateError.message);
-          // Continue anyway - upload succeeded
         }
       } catch (updateErr: any) {
         console.warn('[SimulationService] Update failed:', updateErr.message);
       }
     }
 
-    if (params.onProgress) {
-      params.onProgress(100);
-    }
+    if (params.onProgress) params.onProgress(100);
 
     return {
       success: true,
@@ -240,10 +404,9 @@ export const uploadGeometry = async (params: {
 };
 
 // -----------------------------------------------------------------------------
-// FONCTIONS UTILITAIRES AJOUTÉES
+// FONCTIONS UTILITAIRES
 // -----------------------------------------------------------------------------
 
-// Vérifier si une simulation existe
 export const checkSimulationExists = async (simulationId: string): Promise<boolean> => {
   try {
     const { data, error } = await supabase
@@ -258,63 +421,11 @@ export const checkSimulationExists = async (simulationId: string): Promise<boole
   }
 };
 
-// Créer une simulation avec ID valide
-export const createValidSimulation = async (params: {
-  name: string;
-  description?: string;
-  geometryType: string;
-  config: SimulationConfig;
-}): Promise<{ id: string; success: boolean; error?: string }> => {
-  try {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session?.user) {
-      throw new Error('Authentication required');
-    }
-
-    const { data, error } = await supabase
-      .from('simulations')
-      .insert({
-        user_id: session.user.id,
-        name: params.name.substring(0, 100), // Limit length
-        description: params.description?.substring(0, 500),
-        geometry_type: params.geometryType,
-        geometry_config: params.config.geometry_config || {},
-        boundary_conditions: params.config.boundary_conditions,
-        material_id: params.config.material_id,
-        mesh_density: params.config.mesh_density,
-        solver_type: params.config.solver_type || 'fem_fortran',
-        status: 'pending',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .select('id')
-      .single();
-
-    if (error) {
-      throw new Error(`Failed to create simulation: ${error.message}`);
-    }
-
-    return {
-      id: data.id,
-      success: true
-    };
-  } catch (error: any) {
-    console.error('[SimulationService] Create simulation failed:', error);
-    return {
-      id: '',
-      success: false,
-      error: error.message
-    };
-  }
-};
-
-// Test de connexion à l'Edge Function
 export const testEdgeFunctionConnection = async (): Promise<boolean> => {
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.user) return false;
 
-    // Test OPTIONS request
     const response = await fetch(
       `${supabase.supabaseUrl}/functions/v1/simulate`,
       {
@@ -329,67 +440,6 @@ export const testEdgeFunctionConnection = async (): Promise<boolean> => {
   } catch {
     return false;
   }
-};
-
-// -----------------------------------------------------------------------------
-// FONCTIONS EXISTANTES (CORRIGÉES)
-// -----------------------------------------------------------------------------
-
-export const getSimulations = async () => {
-  const { data, error } = await supabase
-    .from('simulations')
-    .select('*, simulation_results (*)')
-    .order('created_at', { ascending: false })
-    .limit(50); // Limit results
-
-  if (error) throw error;
-  return data as Simulation[];
-};
-
-export const getSimulationById = async (id: string) => {
-  if (!id || id === 'aaaaaaaa-1111-1111-1111-aaaaaaaaaaaa') {
-    throw new Error('Invalid simulation ID');
-  }
-
-  const { data, error } = await supabase
-    .from('simulations')
-    .select('*, simulation_results (*)')
-    .eq('id', id)
-    .single();
-
-  if (error) throw error;
-  return data as Simulation;
-};
-
-export const updateSimulation = async (id: string, params: { 
-  name: string; 
-  description?: string; 
-  geometryType: string; 
-  config: SimulationConfig;
-}) => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentication required');
-
-  const { data, error } = await supabase
-    .from('simulations')
-    .update({
-      name: params.name,
-      description: params.description,
-      geometry_type: params.geometryType,
-      geometry_config: params.config.geometry_config,
-      boundary_conditions: params.config.boundary_conditions as any,
-      material_id: params.config.material_id,
-      mesh_density: params.config.mesh_density,
-      solver_type: params.config.solver_type || 'fem_fortran',
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', id)
-    .eq('user_id', session.user.id)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
 };
 
 export const deleteSimulation = async (id: string) => {
@@ -428,11 +478,16 @@ export const SimulationService = {
   // Fonctions principales
   getSimulations,
   getSimulationById,
-  createSimulation: createValidSimulation, // Utiliser la version corrigée
+  createSimulation,
   updateSimulation,
   startSimulation,
   uploadGeometry,
   deleteSimulation,
+  
+  // Fonctions matériaux
+  getMaterials,
+  getMaterialById,
+  getMaterialsByCategory,
   
   // Fonctions utilitaires
   checkSimulationExists,
