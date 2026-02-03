@@ -137,7 +137,7 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.user) throw new Error('Authentification requise');
 
-  const { data, error } = await supabase.functions.invoke('run-simulation', {
+  const { data, error } = await supabase.functions.invoke('simulate', {
     body: { simulationId }
   });
 
