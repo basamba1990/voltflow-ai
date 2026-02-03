@@ -1,4 +1,4 @@
-// File: src/services/simulation.service.ts
+// File: src/services/simulation.service.ts - VERSION CORRIGÉE
 import { supabase } from '@/lib/supabase';
 import type { Database } from '@/lib/database.types';
 
@@ -52,17 +52,11 @@ export interface UploadGeometryResponse {
   path?: string;
 }
 
-export interface UploadGeometryParams {
-  file: File;
-  simulationId?: string;
-  geometry_config?: any;
-}
-
 // -----------------------------------------------------------------------------
 // FONCTIONS EXPORTÉES
 // -----------------------------------------------------------------------------
 
-export const getSimulations = async (): Promise<Simulation[]> => {
+export const getSimulations = async () => {
   const { data, error } = await supabase
     .from('simulations')
     .select('*, simulation_results (*)')
@@ -70,13 +64,13 @@ export const getSimulations = async (): Promise<Simulation[]> => {
   
   if (error) {
     console.error('Erreur récupération simulations:', error);
-    throw new Error(`Impossible de récupérer les simulations: ${error.message}`);
+    throw error;
   }
   
   return data as Simulation[];
 };
 
-export const getSimulationById = async (id: string): Promise<Simulation> => {
+export const getSimulationById = async (id: string) => {
   const { data, error } = await supabase
     .from('simulations')
     .select('*, simulation_results (*)')
@@ -85,7 +79,7 @@ export const getSimulationById = async (id: string): Promise<Simulation> => {
   
   if (error) {
     console.error(`Erreur récupération simulation ${id}:`, error);
-    throw new Error(`Impossible de récupérer la simulation: ${error.message}`);
+    throw error;
   }
   
   return data as Simulation;
@@ -96,7 +90,7 @@ export const createSimulation = async (params: {
   description?: string; 
   geometryType: string; 
   config: SimulationConfig 
-}): Promise<Simulation> => {
+}) => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.user) throw new Error('Authentification requise');
 
@@ -112,18 +106,17 @@ export const createSimulation = async (params: {
       material_id: params.config.material_id,
       mesh_density: params.config.mesh_density,
       solver_type: params.config.solver_type || 'fem_fortran',
-      status: 'pending',
-      progress: 0
+      status: 'pending'
     })
     .select()
     .single();
   
   if (error) {
     console.error('Erreur création simulation:', error);
-    throw new Error(`Impossible de créer la simulation: ${error.message}`);
+    throw error;
   }
   
-  return data as Simulation;
+  return data;
 };
 
 export const updateSimulation = async (id: string, params: { 
@@ -131,7 +124,7 @@ export const updateSimulation = async (id: string, params: {
   description?: string; 
   geometryType: string; 
   config: SimulationConfig 
-}): Promise<Simulation> => {
+}) => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.user) throw new Error('Authentification requise');
 
@@ -154,19 +147,19 @@ export const updateSimulation = async (id: string, params: {
   
   if (error) {
     console.error(`Erreur mise à jour simulation ${id}:`, error);
-    throw new Error(`Impossible de mettre à jour la simulation: ${error.message}`);
+    throw error;
   }
   
-  return data as Simulation;
+  return data;
 };
 
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
   const { data: { session } } = await supabase.auth.getSession();
   if (!session?.user) throw new Error('Authentification requise');
 
+  console.log(`🚀 Lancement simulation ${simulationId} pour utilisateur ${session.user.id}`);
+  
   try {
-    console.log(`🚀 Lancement simulation ${simulationId} pour utilisateur ${session.user.id}`);
-    
     // Récupérer la simulation
     const simulation = await getSimulationById(simulationId);
     
@@ -190,8 +183,8 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
 
     console.log('📤 Appel Edge Function simulate avec config:', config);
 
-    // Mettre à jour le statut en "running" avant d'appeler l'Edge Function
-    await supabase
+    // Mettre à jour le statut en "running"
+    const { error: updateError } = await supabase
       .from('simulations')
       .update({
         status: 'running',
@@ -199,6 +192,10 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
         started_at: new Date().toISOString()
       })
       .eq('id', simulationId);
+
+    if (updateError) {
+      console.error('❌ Erreur mise à jour statut running:', updateError);
+    }
 
     // Appeler la fonction Edge 'simulate'
     const { data, error } = await supabase.functions.invoke('simulate', {
@@ -213,7 +210,7 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       console.error('❌ Erreur Edge Function simulate:', error);
       
       // Marquer la simulation comme échouée
-      await supabase
+      const { error: failError } = await supabase
         .from('simulations')
         .update({
           status: 'failed',
@@ -221,6 +218,10 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
           completed_at: new Date().toISOString()
         })
         .eq('id', simulationId);
+      
+      if (failError) {
+        console.error('❌ Erreur mise à jour statut failed:', failError);
+      }
       
       throw new Error(`Impossible de lancer la simulation: ${error.message}`);
     }
@@ -243,44 +244,32 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
   } catch (error: any) {
     console.error('❌ Erreur dans startSimulation:', error);
     
-    // Marquer la simulation comme échouée
-    await supabase
-      .from('simulations')
-      .update({
-        status: 'failed',
-        error_message: error.message,
-        completed_at: new Date().toISOString()
-      })
-      .eq('id', simulationId)
-      .catch(e => console.error('Erreur lors de la mise à jour du statut:', e));
+    // Marquer la simulation comme échouée (sans .catch)
+    try {
+      const { error: updateError } = await supabase
+        .from('simulations')
+        .update({
+          status: 'failed',
+          error_message: error.message,
+          completed_at: new Date().toISOString()
+        })
+        .eq('id', simulationId);
+      
+      if (updateError) {
+        console.error('❌ Erreur mise à jour statut failed:', updateError);
+      }
+    } catch (e) {
+      console.error('❌ Erreur catch mise à jour:', e);
+    }
     
     throw error;
   }
 };
 
-export const cancelSimulation = async (simulationId: string): Promise<void> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
-
-  const { error } = await supabase
-    .from('simulations')
-    .update({
-      status: 'cancelled',
-      completed_at: new Date().toISOString()
-    })
-    .eq('id', simulationId)
-    .eq('user_id', session.user.id);
-
-  if (error) {
-    console.error(`Erreur annulation simulation ${simulationId}:`, error);
-    throw new Error(`Impossible d'annuler la simulation: ${error.message}`);
-  }
-};
-
-export const uploadGeometry = async (params: UploadGeometryParams): Promise<UploadGeometryResponse> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
-
+export const uploadGeometry = async (params: { 
+  file: File; 
+  simulationId?: string;
+}): Promise<UploadGeometryResponse> => {
   try {
     // Vérifier le type de fichier
     const allowedTypes = ['stl', 'step', 'stp', 'obj', 'iges', 'igs', 'vtp', 'vti', 'ply', 'vtk'];
@@ -290,19 +279,22 @@ export const uploadGeometry = async (params: UploadGeometryParams): Promise<Uplo
       throw new Error(`Format non supporté: ${fileExt}. Formats acceptés: ${allowedTypes.join(', ')}`);
     }
 
+    // Obtenir la session utilisateur
+    const { data: { session } } = await supabase.auth.getSession();
+    const userId = session?.user?.id || 'anonymous';
+    
     // Créer un nom de fichier unique
     const timestamp = Date.now();
     const randomId = Math.random().toString(36).substring(2, 9);
     const safeName = params.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const uniqueFileName = `geometry_${timestamp}_${randomId}_${safeName}`;
-    const filePath = `${session.user.id}/${uniqueFileName}`;
+    const fileName = `${userId}/${timestamp}_${randomId}_${safeName}`;
 
-    console.log(`📤 Upload géométrie: ${params.file.name} (${params.file.size} bytes)`);
+    console.log(`📤 Upload géométrie: ${params.file.name} vers ${fileName}`);
 
     // Upload vers Supabase Storage
     const { data: uploadData, error: uploadError } = await supabase.storage
-      .from('simulation-files')
-      .upload(filePath, params.file, {
+      .from('geometries')
+      .upload(fileName, params.file, {
         cacheControl: '3600',
         upsert: false,
         contentType: params.file.type || 'application/octet-stream'
@@ -310,13 +302,13 @@ export const uploadGeometry = async (params: UploadGeometryParams): Promise<Uplo
 
     if (uploadError) {
       console.error('❌ Erreur upload:', uploadError);
-      throw new Error(`Échec de l'upload: ${uploadError.message}`);
+      throw new Error(`Upload échoué: ${uploadError.message}`);
     }
 
     // Récupérer l'URL publique
     const { data: { publicUrl } } = supabase.storage
-      .from('simulation-files')
-      .getPublicUrl(filePath);
+      .from('geometries')
+      .getPublicUrl(fileName);
 
     console.log(`✅ Upload réussi: ${publicUrl}`);
 
@@ -324,10 +316,9 @@ export const uploadGeometry = async (params: UploadGeometryParams): Promise<Uplo
     if (params.simulationId) {
       const updateData = {
         geometry_config: {
-          ...(params.geometry_config || {}),
           file_url: publicUrl,
           file_name: params.file.name,
-          file_path: filePath,
+          file_path: fileName,
           file_size: params.file.size,
           file_type: fileExt,
           uploaded_at: new Date().toISOString()
@@ -342,8 +333,6 @@ export const uploadGeometry = async (params: UploadGeometryParams): Promise<Uplo
 
       if (updateError) {
         console.warn('⚠️ Simulation non mise à jour:', updateError);
-      } else {
-        console.log(`✅ Simulation ${params.simulationId} mise à jour avec la géométrie`);
       }
     }
 
@@ -352,7 +341,7 @@ export const uploadGeometry = async (params: UploadGeometryParams): Promise<Uplo
       fileUrl: publicUrl,
       fileName: params.file.name,
       fileSize: params.file.size,
-      path: filePath
+      path: fileName
     };
 
   } catch (error: any) {
@@ -361,114 +350,28 @@ export const uploadGeometry = async (params: UploadGeometryParams): Promise<Uplo
   }
 };
 
-export const uploadGeometryViaEdgeFunction = async (params: UploadGeometryParams): Promise<UploadGeometryResponse> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
-
-  try {
-    // Convertir le fichier en base64
-    const reader = new FileReader();
-    const base64Data = await new Promise<string>((resolve, reject) => {
-      reader.onload = () => {
-        const result = reader.result as string;
-        const base64 = result.split(',')[1];
-        resolve(base64);
-      };
-      reader.onerror = () => reject(new Error('Erreur de lecture du fichier'));
-      reader.readAsDataURL(params.file);
-    });
-
-    // Appeler l'Edge Function upload-geometry
-    const { data, error } = await supabase.functions.invoke('upload-geometry', {
-      body: {
-        fileName: params.file.name,
-        fileData: base64Data,
-        userId: session.user.id,
-        simulationId: params.simulationId,
-        geometry_config: params.geometry_config || {}
-      }
-    });
-
-    if (error) {
-      console.error('❌ Erreur Edge Function upload-geometry:', error);
-      throw new Error(`Upload échoué: ${error.message}`);
-    }
-
-    return data as UploadGeometryResponse;
-
-  } catch (error: any) {
-    console.error('❌ Erreur upload via Edge Function:', error);
-    throw error;
-  }
-};
-
-export const deleteSimulation = async (id: string): Promise<void> => {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.user) throw new Error('Authentification requise');
-
-  const { error } = await supabase
-    .from('simulations')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', session.user.id);
-
-  if (error) {
-    console.error(`Erreur suppression simulation ${id}:`, error);
-    throw new Error(`Impossible de supprimer la simulation: ${error.message}`);
-  }
+export const deleteSimulation = async (id: string) => {
+  const { error } = await supabase.from('simulations').delete().eq('id', id);
+  if (error) throw error;
 };
 
 export const subscribeToSimulation = (id: string, callback: (payload: any) => void) => {
-  return supabase.channel(`simulation-${id}`)
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'simulations',
-        filter: `id=eq.${id}`
-      },
-      callback
-    )
-    .on(
-      'postgres_changes',
-      {
-        event: '*',
-        schema: 'public',
-        table: 'simulation_results',
-        filter: `simulation_id=eq.${id}`
-      },
-      callback
-    )
+  return supabase.channel(`sim-${id}`)
+    .on('postgres_changes', { 
+      event: '*', 
+      schema: 'public', 
+      table: 'simulations', 
+      filter: `id=eq.${id}` 
+    }, callback)
     .subscribe();
 };
 
 export const unsubscribeFromChannel = (channel: any) => {
-  if (channel) {
-    supabase.removeChannel(channel);
-  }
-};
-
-export const getSimulationProgress = async (simulationId: string): Promise<{ progress: number; status: SimulationStatus }> => {
-  const { data, error } = await supabase
-    .from('simulations')
-    .select('progress, status')
-    .eq('id', simulationId)
-    .single();
-
-  if (error) {
-    console.error(`Erreur récupération progression ${simulationId}:`, error);
-    throw error;
-  }
-
-  return {
-    progress: data.progress || 0,
-    status: data.status as SimulationStatus
-  };
+  if (channel) supabase.removeChannel(channel);
 };
 
 // -----------------------------------------------------------------------------
-// SERVICE EXPORT
+// DEFAULT EXPORT
 // -----------------------------------------------------------------------------
 
 export const SimulationService = {
@@ -477,13 +380,10 @@ export const SimulationService = {
   createSimulation,
   updateSimulation,
   startSimulation,
-  cancelSimulation,
   uploadGeometry,
-  uploadGeometryViaEdgeFunction,
   deleteSimulation,
   subscribeToSimulation,
-  unsubscribeFromChannel,
-  getSimulationProgress
+  unsubscribeFromChannel
 };
 
 export default SimulationService;
