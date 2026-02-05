@@ -1,37 +1,27 @@
--- Seed materials
-INSERT INTO public.materials (name, category, thermal_conductivity, specific_heat, density, melting_point, color_hex, is_public) VALUES
-  ('Aluminum 6061', 'metal', 167.0, 896.0, 2700.0, 582.0, '#CCCCCC', true),
-  ('Copper', 'metal', 401.0, 385.0, 8960.0, 1084.0, '#B87333', true),
-  ('Stainless Steel 304', 'metal', 16.2, 500.0, 8000.0, 1400.0, '#E0E0E0', true),
-  ('Titanium Grade 2', 'metal', 22.0, 522.0, 4510.0, 1668.0, '#878681', true),
-  ('Silicon Carbide', 'ceramic', 120.0, 750.0, 3210.0, 2730.0, '#2F4F4F', true),
-  ('Polycarbonate', 'polymer', 0.2, 1200.0, 1200.0, 155.0, '#87CEEB', true),
-  ('Carbon Fiber Composite', 'composite', 5.0, 710.0, 1600.0, 3550.0, '#1C1C1C', true);
+-- File: backend/supabase/seed.sql (ou nouvelle migration)
 
--- Seed a test user (if needed for development)
-INSERT INTO auth.users (id, email) VALUES
-  ('11111111-1111-1111-1111-111111111111', 'test@voltflow.ai')
-ON CONFLICT (id) DO NOTHING;
+-- ============================================
+-- SCRIPT DE RÉPARATION COMPLET POUR SUPABASE
+-- VERSION CORRIGÉE ET SIMPLIFIÉE
+-- ============================================
 
-INSERT INTO public.profiles (id, email, first_name, role, subscription_plan, simulations_limit) VALUES
-  ('11111111-1111-1111-1111-111111111111', 'test@voltflow.ai', 'Test Engineer', 'engineer', 'professional', 100)
-ON CONFLICT (id) DO NOTHING;
+-- 1. DÉSACTIVER LES CONTRAINTES TEMPORAIREMENT
+SET session_replication_role = 'replica';
 
-
--- backend/supabase/seed.sql
--- CORRECTIONS COMPLÈTES POUR UPLOAD DE GÉOMÉTRIES VOLTFLOW AI
-
--- 1. SUPPRESSION DES POLITIQUES EXISTANTES POUR ÉVITER LES CONFLITS
-DROP POLICY IF EXISTS "Allow authenticated upload" ON storage.objects;
+-- 2. SUPPRIMER LES POLITIQUES EXISTANTES POUR ÉVITER LES CONFLITS
+-- (Assurez-vous que ces DROP POLICY sont exécutés avant de recréer)
 DROP POLICY IF EXISTS "Users can upload geometry files" ON storage.objects;
 DROP POLICY IF EXISTS "Users can view own geometry files" ON storage.objects;
-DROP POLICY IF EXISTS "Users can update own files" ON storage.objects;
-DROP POLICY IF EXISTS "Users can delete own files" ON storage.objects;
+DROP POLICY IF EXISTS "Users can update own geometry files" ON storage.objects;
+DROP POLICY IF EXISTS "Users can delete own geometry files" ON storage.objects;
+DROP POLICY IF EXISTS "Service role can upload geometry files for users" ON storage.objects;
+DROP POLICY IF EXISTS "Users and service role can view own geometry files" ON storage.objects;
+DROP POLICY IF EXISTS "Users and service role can update own geometry files" ON storage.objects;
+DROP POLICY IF EXISTS "Users and service role can delete own geometry files" ON storage.objects;
 
--- 2. MISE À JOUR DU BUCKET 'geometries' POUR INCLURE TOUS LES MIME TYPES REQUIS
-UPDATE storage.buckets 
+-- 3. MISE À JOUR DU BUCKET 'geometries' POUR INCLURE TOUS LES MIME TYPES REQUIS
+UPDATE storage.buckets
 SET allowed_mime_types = ARRAY[
-  -- Formats existants
   'application/octet-stream',  -- Format générique pour fichiers binaires
   'application/sla',           -- STL ASCII
   'model/stl',                 -- STL binaire
@@ -51,14 +41,18 @@ SET allowed_mime_types = ARRAY[
 ]
 WHERE id = 'geometries';
 
--- 3. POLITIQUE D'UPLOAD CORRIGÉE ET SÉCURISÉE
--- Vérifie: bucket_id, utilisateur authentifié, chemin du fichier correspond à l'UID, extensions autorisées
-CREATE POLICY "Users can upload geometry files"
+-- 4. POLITIQUE D'UPLOAD CORRIGÉE ET SÉCURISÉE
+-- Permet au service_role d'uploader pour le compte de l'utilisateur
+CREATE POLICY "Service role can upload geometry files for users"
   ON storage.objects FOR INSERT
   WITH CHECK (
     bucket_id = 'geometries'
-    AND auth.role() = 'authenticated'
-    AND auth.uid()::text = (storage.foldername(name))[1]
+    AND (
+      -- L'utilisateur peut uploader ses propres fichiers
+      auth.uid()::text = (storage.foldername(name))[1]
+      -- OU le service_role peut uploader pour n'importe quel utilisateur (vérifié dans l'Edge Function)
+      OR auth.role() = 'service_role'
+    )
     AND (
       -- Extensions à 3 caractères
       LOWER(RIGHT(name, 4)) IN ('.stl', '.obj', '.igs', '.vtp', '.vti', '.ply', '.vtk')
@@ -67,79 +61,115 @@ CREATE POLICY "Users can upload geometry files"
     )
   );
 
--- 4. POLITIQUE DE LECTURE (pour l'Edge Function et l'utilisateur)
-CREATE POLICY "Users can view own geometry files"
+-- 5. POLITIQUE DE LECTURE (pour l'Edge Function et l'utilisateur)
+CREATE POLICY "Users and service role can view own geometry files"
   ON storage.objects FOR SELECT
   USING (
     bucket_id = 'geometries'
     AND (
-      -- L'utilisateur peut voir ses propres fichiers
       auth.uid()::text = (storage.foldername(name))[1]
-      -- OU l'Edge Function (service_role) peut voir tous les fichiers
       OR auth.role() = 'service_role'
     )
   );
 
--- 5. POLITIQUE DE MISE À JOUR (si nécessaire)
-CREATE POLICY "Users can update own geometry files"
+-- 6. POLITIQUE DE MISE À JOUR (si nécessaire)
+CREATE POLICY "Users and service role can update own geometry files"
   ON storage.objects FOR UPDATE
   USING (
     bucket_id = 'geometries'
-    AND auth.uid()::text = (storage.foldername(name))[1]
+    AND (
+      auth.uid()::text = (storage.foldername(name))[1]
+      OR auth.role() = 'service_role'
+    )
   );
 
--- 6. POLITIQUE DE SUPPRESSION (pour le nettoyage)
-CREATE POLICY "Users can delete own geometry files"
+-- 7. POLITIQUE DE SUPPRESSION (pour le nettoyage)
+CREATE POLICY "Users and service role can delete own geometry files"
   ON storage.objects FOR DELETE
   USING (
     bucket_id = 'geometries'
-    AND auth.uid()::text = (storage.foldername(name))[1]
+    AND (
+      auth.uid()::text = (storage.foldername(name))[1]
+      OR auth.role() = 'service_role'
+    )
   );
 
--- 7. ACTIVER RLS SUR LA TABLE storage.objects (s'assurer qu'il est activé)
+-- 8. ACTIVER RLS SUR LA TABLE storage.objects (s'assurer qu'il est activé)
 ALTER TABLE storage.objects ENABLE ROW LEVEL SECURITY;
 
--- 8. VÉRIFICATION DES AUTORISATIONS POUR LE BUCKET
-UPDATE storage.buckets 
+-- 9. VÉRIFICATION DES AUTORISATIONS POUR LE BUCKET
+UPDATE storage.buckets
 SET public = false,
     file_size_limit = 52428800, -- 50MB
     allowed_mime_types = allowed_mime_types
 WHERE id = 'geometries';
 
--- 9. CRÉATION D'INDEX POUR PERFORMANCE
-CREATE INDEX IF NOT EXISTS idx_storage_objects_bucket_id_name 
-ON storage.objects(bucket_id, name);
-
-CREATE INDEX IF NOT EXISTS idx_storage_objects_bucket_id_folder 
-ON storage.objects(bucket_id, (storage.foldername(name)));
-
--- 10. HARMONISATION DES TYPES ET POLITIQUES EDGE FUNCTIONS
--- Permettre à l'Edge Function (service_role) de mettre à jour les simulations
-CREATE POLICY "Edge Function can update anything" 
-ON public.simulations FOR UPDATE 
-USING (auth.jwt() ->> 'role' = 'service_role');
-
--- S'assurer que mesh_density peut accepter des valeurs flexibles si nécessaire
--- ALTER TABLE public.simulations ALTER COLUMN mesh_density TYPE TEXT; 
--- Note: Déjà géré par le mapping côté frontend pour l'instant.
-
--- 11. FONCTION UTILITAIRE POUR VÉRIFIER LES PERMISSIONS
-CREATE OR REPLACE FUNCTION check_upload_permissions(user_id uuid, file_path text)
-RETURNS boolean AS $$
-DECLARE
-  folder_name text;
+-- 10. CORRECTION DE LA COLONNE material_id DANS simulations
+-- S'assurer que material_id est de type TEXT et a une FK valide
+DO $$
 BEGIN
-  -- Extraire le premier élément du chemin (user ID)
-  folder_name := (SELECT (storage.foldername(file_path))[1]);
-  
-  -- Vérifier que le dossier correspond à l'user_id
-  IF folder_name = user_id::text THEN
-    RETURN true;
-  ELSE
-    RETURN false;
-  END IF;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+    IF EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = 'public'
+               AND table_name = 'simulations'
+               AND column_name = 'material_id'
+               AND data_type = 'uuid') THEN
+
+        -- Mettre à jour toutes les valeurs material_id vers 'aluminum-6061' (valeur par défaut)
+        UPDATE public.simulations
+        SET material_id = 'aluminum-6061'
+        WHERE material_id IS NOT NULL;
+
+        -- Changer le type de la colonne de UUID à TEXT
+        ALTER TABLE public.simulations
+        ALTER COLUMN material_id TYPE TEXT USING material_id::text;
+
+        RAISE NOTICE 'Colonne simulations.material_id convertie de UUID à TEXT';
+
+    END IF;
+
+    -- S'assurer que toutes les simulations ont un material_id valide
+    UPDATE public.simulations
+    SET material_id = 'aluminum-6061'
+    WHERE material_id IS NULL
+       OR material_id = ''
+       OR material_id NOT IN (SELECT id FROM public.materials);
+
+END $$;
+
+-- 11. Assurer la cohérence des IDs de matériaux dans la table materials
+-- Les IDs doivent être en minuscules et avec des tirets pour correspondre au frontend
+UPDATE public.materials
+SET id = LOWER(REPLACE(name, ' ', '-'))
+WHERE id IS DISTINCT FROM LOWER(REPLACE(name, ' ', '-'));
+
+-- 12. Recréer la FK si elle a été supprimée ou n'existe pas
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.table_constraints
+                   WHERE constraint_name = 'simulations_material_id_fkey'
+                   AND table_name = 'simulations'
+                   AND table_schema = 'public') THEN
+        ALTER TABLE public.simulations
+        ADD CONSTRAINT simulations_material_id_fkey
+        FOREIGN KEY (material_id) REFERENCES public.materials(id)
+        ON DELETE SET NULL;
+        RAISE NOTICE 'Contrainte FK simulations_material_id_fkey recréée';
+    END IF;
+END $$;
+
+-- 13. Mettre à jour la politique RLS pour simulations pour permettre au service_role de mettre à jour
+DROP POLICY IF EXISTS "Edge Function can update anything" ON public.simulations;
+CREATE POLICY "Edge Function can update simulations"
+ON public.simulations FOR UPDATE
+USING (auth.role() = 'service_role' OR auth.uid() = user_id);
+
+-- 14. Mettre à jour la politique RLS pour simulation_results pour permettre au service_role d'insérer
+DROP POLICY IF EXISTS "Edge Function can insert simulation results" ON public.simulation_results;
+CREATE POLICY "Edge Function can insert simulation results"
+ON public.simulation_results FOR INSERT WITH CHECK (auth.role() = 'service_role' OR auth.uid() = user_id);
+
+-- 15. RÉACTIVER LES CONTRAINTES
+SET session_replication_role = 'origin';
 
 -- Message de confirmation
 DO $$
@@ -148,4 +178,6 @@ BEGIN
   RAISE NOTICE '✅ Formats supportés: STL, STEP, STP, OBJ, IGES, IGS, VTP, VTI, PLY, VTK';
   RAISE NOTICE '✅ Structure de dossiers: user_id/timestamp_filename.ext';
   RAISE NOTICE '✅ Taille maximale: 50MB';
+  RAISE NOTICE '✅ material_id corrigé et FK recréée';
+  RAISE NOTICE '✅ Politiques RLS pour simulations et simulation_results mises à jour';
 END $$;
