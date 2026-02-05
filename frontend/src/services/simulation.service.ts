@@ -50,6 +50,7 @@ export interface UploadGeometryResponse {
   fileName: string;
   fileSize?: number;
   path?: string;
+  message?: string;
 }
 
 // -----------------------------------------------------------------------------
@@ -109,11 +110,11 @@ export const getSimulationById = async (id: string): Promise<Simulation> => {
   }
 };
 
-export const createSimulation = async (params: { 
-  name: string; 
-  description?: string; 
-  geometryType: string; 
-  config: SimulationConfig 
+export const createSimulation = async (params: {
+  name: string;
+  description?: string;
+  geometryType: string;
+  config: SimulationConfig
 }): Promise<Simulation> => {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
@@ -152,11 +153,11 @@ export const createSimulation = async (params: {
   }
 };
 
-export const updateSimulation = async (id: string, params: { 
-  name: string; 
-  description?: string; 
-  geometryType: string; 
-  config: SimulationConfig 
+export const updateSimulation = async (id: string, params: {
+  name: string;
+  description?: string;
+  geometryType: string;
+  config: SimulationConfig
 }): Promise<Simulation> => {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
@@ -327,7 +328,7 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       clearTimeout(timeoutId);
       
       if (invokeError.name === 'AbortError') {
-        throw new Error('Timeout: L\'Edge Function n\'a pas répondu dans les délais (45 secondes)');
+        throw new Error('La requête de simulation a expiré.');
       }
       throw invokeError;
     }
@@ -354,9 +355,9 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
   }
 };
 
-export const uploadGeometry = async (params: { 
-  file: File; 
-  simulationId?: string;
+export const uploadGeometry = async (params: {
+  file: File;
+  simulationId: string; // simulationId est maintenant requis
 }): Promise<UploadGeometryResponse> => {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
@@ -366,7 +367,6 @@ export const uploadGeometry = async (params: {
 
     const userId = session.session.user.id;
 
-    // Vérifier le type de fichier
     const allowedTypes = ['stl', 'step', 'stp', 'obj', 'iges', 'igs', 'vtp', 'vti', 'ply', 'vtk'];
     const fileExt = params.file.name.toLowerCase().split('.').pop();
     
@@ -374,77 +374,38 @@ export const uploadGeometry = async (params: {
       throw new Error(`Format non supporté: ${fileExt}. Formats acceptés: ${allowedTypes.join(', ')}`);
     }
 
-    // Créer un nom de fichier unique
-    const timestamp = Date.now();
-    const randomId = Math.random().toString(36).substring(2, 9);
-    const safeName = params.file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const fileName = `${userId}/${timestamp}_${randomId}_${safeName}`;
+    // Lire le fichier en tant que ArrayBuffer puis le convertir en Base64
+    const arrayBuffer = await params.file.arrayBuffer();
+    const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
 
-    console.log(`📤 Upload géométrie: ${params.file.name} vers ${fileName}`);
+    console.log(`📤 Appel Edge Function upload-geometry pour ${params.file.name} (simulation: ${params.simulationId})`);
 
-    // Upload vers Supabase Storage
-    const { error: uploadError } = await supabase.storage
-      .from('geometries')
-      .upload(fileName, params.file, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: params.file.type || 'application/octet-stream'
-      });
+    const { data: edgeFunctionData, error: edgeFunctionError } = await supabase.functions.invoke('upload-geometry', {
+      body: {
+        fileName: params.file.name,
+        fileData: base64String, // Envoyer le fichier en Base64
+        userId: userId, // Envoyer userId explicitement
+        simulation_id: params.simulationId, // Envoyer simulationId explicitement
+      },
+    });
 
-    if (uploadError) {
-      console.error('❌ Erreur upload:', uploadError);
-      throw new Error(`Upload échoué: ${uploadError.message}`);
+    if (edgeFunctionError) {
+      console.error('❌ Erreur Edge Function upload-geometry:', edgeFunctionError);
+      throw new Error(`Échec de l'upload via Edge Function: ${edgeFunctionError.message}`);
     }
 
-    // Récupérer l'URL publique
-    const { data: { publicUrl } } = supabase.storage
-      .from('geometries')
-      .getPublicUrl(fileName);
-
-    console.log(`✅ Upload réussi: ${publicUrl}`);
-
-    // Mettre à jour la simulation si ID fourni
-    if (params.simulationId) {
-      // Vérifier que la simulation appartient à l'utilisateur
-      const { data: existingSim, error: checkError } = await supabase
-        .from('simulations')
-        .select('id')
-        .eq('id', params.simulationId)
-        .eq('user_id', userId)
-        .single();
-
-      if (!checkError && existingSim) {
-        const updateData = {
-          geometry_config: {
-            file_url: publicUrl,
-            file_name: params.file.name,
-            file_path: fileName,
-            file_size: params.file.size,
-            file_type: fileExt,
-            uploaded_at: new Date().toISOString()
-          },
-          updated_at: new Date().toISOString()
-        };
-
-        const { error: updateError } = await supabase
-          .from('simulations')
-          .update(updateData)
-          .eq('id', params.simulationId);
-
-        if (updateError) {
-          console.warn('⚠️ Simulation non mise à jour:', updateError);
-        } else {
-          console.log(`✅ Simulation ${params.simulationId} mise à jour avec la géométrie`);
-        }
-      }
+    if (!edgeFunctionData?.success) {
+      throw new Error(edgeFunctionData?.error || 'Erreur inconnue lors de l\'upload de géométrie');
     }
 
+    // La mise à jour de la simulation est maintenant gérée par l'Edge Function
     return {
       success: true,
-      fileUrl: publicUrl,
-      fileName: params.file.name,
-      fileSize: params.file.size,
-      path: fileName
+      fileUrl: edgeFunctionData.fileUrl,
+      fileName: edgeFunctionData.fileName,
+      fileSize: edgeFunctionData.fileSize,
+      path: edgeFunctionData.path,
+      message: edgeFunctionData.message
     };
 
   } catch (error: any) {
