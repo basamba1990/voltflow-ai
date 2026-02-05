@@ -10,34 +10,54 @@ const corsHeaders = {
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders });
-  if (req.method !== "POST") return new Response(JSON.stringify({ success: false, error: "Method not allowed" }), { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  if (req.method !== "POST") {
+    return new Response(JSON.stringify({ success: false, error: "Method not allowed. Use POST." }), { status: 405, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  }
+
+  let userId: string | null = null;
+  let simulationId: string | null = null;
 
   try {
     const authHeader = req.headers.get("Authorization");
     if (!authHeader?.startsWith("Bearer ")) {
-      return new Response(JSON.stringify({ success: false, error: "Unauthorized" }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      throw new Error("Unauthorized: Missing or invalid Authorization header.");
     }
+    const token = authHeader.split(" ")[1];
+    const { data: user, error: authError } = await createClient(
+      Deno.env.get("SUPABASE_URL") as string,
+      Deno.env.get("SUPABASE_ANON_KEY") as string
+    ).auth.getUser(token);
+
+    if (authError || !user?.user?.id) {
+      throw new Error(`Authentication failed: ${authError?.message || "User ID not found."}`);
+    }
+    userId = user.user.id;
 
     const body = await req.json();
-    const { fileName, fileData, userId, simulationId, geometry_config } = body ?? {};
+    const { fileName, fileData, simulation_id, geometry_config } = body ?? {};
 
-    if (!fileName || !fileData || !userId || !simulationId) {
-      return new Response(JSON.stringify({ success: false, error: "Missing required fields: fileName, fileData, userId, simulationId" }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    if (!fileName || !fileData || !simulation_id) {
+      throw new Error("Missing required fields: fileName, fileData, simulation_id.");
     }
+    simulationId = simulation_id;
 
     const allowedTypes = ["stl", "step", "stp", "obj", "iges", "igs", "vtp", "vti", "ply", "vtk"];
     const fileExt = fileName.toLowerCase().split(".").pop();
     if (!fileExt || !allowedTypes.includes(fileExt)) {
-      return new Response(JSON.stringify({ success: false, error: `Format non supporté: ${fileExt}. Acceptés: ${allowedTypes.join(", ")}` }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      throw new Error(`Unsupported format: ${fileExt}. Accepted: ${allowedTypes.join(", ")}.`);
     }
 
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL");
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) throw new Error("Env variables missing");
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error("Environment variables missing: SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.");
+    }
 
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+    // Utiliser le service_role client pour l'upload
+    const supabaseServiceRole = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
+    });
 
-    // decode base64 to Uint8Array
     const binaryString = atob(fileData);
     const len = binaryString.length;
     const bytes = new Uint8Array(len);
@@ -45,25 +65,27 @@ Deno.serve(async (req: Request) => {
 
     const timestamp = Date.now();
     const uniqueId = Math.random().toString(36).substring(2, 9);
+    // Chemin du fichier doit inclure l'ID utilisateur pour RLS
     const uniquePath = `${userId}/${timestamp}_${uniqueId}_${fileName}`;
 
     const fileBlob = new Blob([bytes], { type: "application/octet-stream" });
 
-    const { error: uploadError } = await supabase.storage.from("simulation-files").upload(uniquePath, fileBlob, {
-      contentType: "application/octet-stream",
+    const { error: uploadError } = await supabaseServiceRole.storage.from("geometries").upload(uniquePath, fileBlob, {
+      contentType: "application/octet-octet-stream",
       upsert: false,
       cacheControl: "3600",
     });
 
     if (uploadError) {
-      console.error("Storage error:", uploadError);
-      throw new Error(`Storage error: ${uploadError.message}`);
+      console.error("Storage upload error:", uploadError);
+      throw new Error(`Storage upload failed: ${uploadError.message}`);
     }
 
-    const { data: urlData } = supabase.storage.from("simulation-files").getPublicUrl(uniquePath);
-    const fileUrl = (urlData as any).publicUrl;
+    const { data: urlData } = supabaseServiceRole.storage.from("geometries").getPublicUrl(uniquePath);
+    const fileUrl = urlData.publicUrl;
 
-    const { error: updateError } = await supabase
+    // Mettre à jour la simulation dans la base de données
+    const { error: updateError } = await supabaseServiceRole
       .from("simulations")
       .update({
         geometry_config: {
@@ -77,20 +99,21 @@ Deno.serve(async (req: Request) => {
         },
         updated_at: new Date().toISOString(),
       })
-      .eq("id", simulationId);
+      .eq("id", simulationId)
+      .eq("user_id", userId); // S'assurer que l'utilisateur est bien le propriétaire de la simulation
 
     if (updateError) {
       console.error("DB update error:", updateError);
-      throw new Error(`DB update error: ${updateError.message}`);
+      throw new Error(`Database update failed: ${updateError.message}`);
     }
 
-    return new Response(JSON.stringify({ success: true, fileUrl, fileName, fileSize: bytes.length, path: uniquePath, message: "Fichier uploadé" }), {
+    return new Response(JSON.stringify({ success: true, fileUrl, fileName, fileSize: bytes.length, path: uniquePath, message: "File uploaded successfully." }), {
       status: 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error: any) {
-    console.error("[UploadGeometry] Error:", error);
-    return new Response(JSON.stringify({ success: false, error: String(error?.message ?? error) }), {
+    console.error("[UploadGeometry] Critical Error:", error);
+    return new Response(JSON.stringify({ success: false, error: error.message || "An unknown error occurred." }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
