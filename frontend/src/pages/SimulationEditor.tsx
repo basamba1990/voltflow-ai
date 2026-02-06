@@ -1,17 +1,35 @@
-// src/pages/SimulationEditor.tsx - VERSION CORRIGÉE COMPLÈTE
+// src/pages/SimulationEditor.tsx - VERSION COMPLÈTEMENT CORRIGÉE
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
 
-// ✅ IMPORTS LUCIDE-REACT CORRIGÉS (noms exacts)
+// ✅ IMPORTS LUCIDE-REACT CORRIGÉS - VERSION VALIDE
 import { 
-  Save, Play, Download, Trash2, Thermometer, Loader2, AlertCircle, 
-  ChevronLeft, UploadCloud, Box, Settings, Eye, EyeOff, Grid3x3, 
-  Maximize2, Minimize2, Copy, FileUp, CheckCircle, XCircle, 
-  FlaskConical, Shield, Cpu, Cube, Square, BarChart3,
-  // Note: 'Grid3X3' doit être 'Grid3x3' (minuscule 'x')
-  // Note: 'ShieldAlert' n'existe pas, utiliser 'Shield'
-  // Note: 'TestTube' n'existe pas, utiliser 'FlaskConical'
+  Save, 
+  Play, 
+  Download, 
+  Trash2, 
+  Thermometer, 
+  Loader2, 
+  AlertCircle,
+  ChevronLeft, 
+  UploadCloud, 
+  Box, // Utilisé pour showAxes et geometry 3D
+  Settings, 
+  Eye, 
+  EyeOff, 
+  Grid3x3, // Note: minuscule 'x' 
+  Maximize2, 
+  Minimize2, 
+  Copy, 
+  FileUp, 
+  CheckCircle, 
+  XCircle,
+  FlaskConical, // Remplace TestTube
+  Shield, // Remplace ShieldAlert
+  Square, 
+  BarChart3,
+  // ❌ Cube n'existe pas dans cette version - utilisation de Box à la place
 } from 'lucide-react';
 
 // Services et hooks
@@ -125,11 +143,12 @@ export default function SimulationEditor() {
     return 'fem_fortran';
   };
 
+  // ✅ CORRECTION : Utilisation de Box pour 3D au lieu de Cube
   const getGeometryIcon = (geometryType: string) => {
     switch (geometryType) {
       case '1d_rod': return BarChart3;
       case '2d_plate': return Square;
-      case '3d_complex': return Cube;
+      case '3d_complex': return Box; // ❌ Cube n'existe pas, utilisation de Box
       default: return Box;
     }
   };
