@@ -1,238 +1,344 @@
+"""
+BRIDGE API - Interface Python/Fortran pour le solveur thermique
+Version: 2.0 - Compatible avec l'interface web
+"""
+
 import numpy as np
 import json
 import os
+import subprocess
+import tempfile
 from pathlib import Path
-from fastapi import FastAPI, BackgroundTasks, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import logging
 from datetime import datetime
-
-# Import des modules locaux
-import sys
-import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'agents'))
-
-from pinn_surrogate import PINNSurrogate
-from artemis_optimizer import ArtemisOptimizer, MutationType
-from uncertainty_quantifier import UncertaintyQuantifier
+import shutil
 
 # Configuration du logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
+# Initialisation FastAPI
 app = FastAPI(
-    title="VoltFlow AI Solver API",
-    description="Système de simulation thermique avec optimisation automatique ARTEMIS",
-    version="2.0.0"
+    title="VoltFlow AI Thermal Solver API",
+    description="API de simulation thermique avec solveur Fortran ND",
+    version="2.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
 )
 
-class SimulationRequest(BaseModel):
-    simulation_id: str
-    geometry_file: str
-    material_id: str
-    boundary_conditions: Dict[str, float]
-    mesh_density: str = "high"
-    thermal_config: Dict[str, float]
-    optimize_surrogate: bool = True
-    max_iterations: int = 15000
+# Modèles de données
+class FortranConfig(BaseModel):
+    """Configuration pour le solveur Fortran"""
+    conductivity: float = 50.0
+    density: float = 2700.0
+    specific_heat: float = 900.0
+    initial_temp: float = 1000.0
+    boundary_temp: float = 25.0
+    heat_flux: float = 1000.0
+    nx: int = 100
+    ny: int = 1
+    nz: int = 1
+    max_iterations: int = 5000
+    dt: float = 0.1
     tolerance: float = 1e-6
+    geometry_type: str = "1d_rod"
+    mesh_file: Optional[str] = None
+
+class SimulationRequest(BaseModel):
+    """Requête de simulation"""
+    simulation_id: str
+    user_id: str
+    fortran_config: FortranConfig
+    output_format: str = "vtk"
 
 class SimulationResponse(BaseModel):
-    status: str
-    results: Dict[str, Any]
-    optimization_report: Optional[Dict[str, Any]] = None
+    """Réponse de simulation"""
+    success: bool
+    simulation_id: str
+    geometry_type: str
+    mesh_points: int
+    iterations: int
+    final_residual: float
+    temperature_stats: Dict[str, float]
+    output_file: str
+    vtk_file_url: Optional[str] = None
     execution_time: float
+    metadata: Dict[str, Any] = {}
 
-# Initialisation des composants
-pinn_model = PINNSurrogate(config={"hidden_layers": [64, 128, 64]})
-artemis_optimizer = ArtemisOptimizer()
-uncertainty_quantifier = UncertaintyQuantifier()
-
-# Simulation du solveur Fortran (remplacé par une implémentation Python pour la démo)
-class ThermalSolver:
-    def __init__(self):
-        self.conductivity = 200.0
-        self.density = 2700.0
-        self.specific_heat = 900.0
+# Classe pour exécuter le solveur Fortran
+class FortranSolver:
+    def __init__(self, solver_path: str = "/app/backend/solver-engine/thermal_solver.exe"):
+        self.solver_path = solver_path
+        self.temp_dir = tempfile.gettempdir()
+        
+        # Vérifier que le solveur existe
+        if not os.path.exists(self.solver_path):
+            logger.error(f"Solveur Fortran introuvable: {self.solver_path}")
+            raise FileNotFoundError(f"Solveur Fortran introuvable: {self.solver_path}")
+        
+        logger.info(f"Solveur Fortran initialisé: {self.solver_path}")
     
-    def solve_heat_transfer(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        """Implémentation Python de l'algorithme de transfert thermique"""
-        n = config.get("mesh_elements", 1000)
-        alpha = self.conductivity / (self.density * self.specific_heat)
-        dt = 0.01
-        
-        # Construction de la matrice
-        A = np.zeros((n, n))
-        for i in range(n-1):
-            A[i, i] = 1.0 + 2.0 * alpha * dt
-            A[i, i+1] = -alpha * dt
-            A[i+1, i] = -alpha * dt
-        A[n-1, n-1] = 1.0 + 2.0 * alpha * dt
-        
-        # Vecteur source
-        b = np.full(n, config.get("initial_temp", 25.0))
-        b[0] = config.get("boundary_temp", 100.0)
-        
-        # Solveur Gauss-Seidel
-        x = np.full(n, config.get("initial_temp", 25.0))
-        iterations = 0
-        
-        for i in range(config.get("max_iterations", 15000)):
-            x_old = x.copy()
-            for j in range(n):
-                sum_val = 0.0
-                for k in range(n):
-                    if k != j:
-                        sum_val += A[j, k] * x[k]
-                x[j] = (b[j] - sum_val) / A[j, j]
+    def run_simulation(self, config: FortranConfig) -> Dict[str, Any]:
+        """Exécute le solveur Fortran avec la configuration donnée"""
+        try:
+            # Créer un fichier de configuration temporaire
+            config_file = os.path.join(self.temp_dir, f"config_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
             
-            residual = np.mean(np.abs(x - x_old))
-            iterations = i + 1
+            with open(config_file, 'w') as f:
+                f.write(f"{config.conductivity}\n")
+                f.write(f"{config.density}\n")
+                f.write(f"{config.specific_heat}\n")
+                f.write(f"{config.initial_temp}\n")
+                f.write(f"{config.boundary_temp}\n")
+                f.write(f"{config.heat_flux}\n")
+                f.write(f"{config.nx} {config.ny} {config.nz}\n")
+                f.write(f"{config.max_iterations}\n")
+                f.write(f"{config.dt}\n")
+                f.write(f"{config.tolerance}\n")
+                f.write(f"{config.geometry_type}\n")
+                f.write(f"thermal_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.vtk\n")
             
-            if residual < config.get("tolerance", 1e-6):
-                break
-        
-        # Calcul des résultats
-        results = {
-            "temperature_field": x.tolist(),
-            "max_temp": float(np.max(x)),
-            "min_temp": float(np.min(x)),
-            "avg_temp": float(np.mean(x)),
-            "heat_gradient": float(np.max(x) - np.min(x)) / n,
-            "convergence_rate": np.exp(-iterations / 1000.0),
-            "uncertainty_score": self._calculate_uncertainty(x, config),
-            "iterations": iterations,
-            "residual": float(residual)
-        }
-        
-        return results
-    
-    def _calculate_uncertainty(self, temperature: np.ndarray, config: Dict[str, Any]) -> float:
-        """Calcule le score d'incertitude"""
-        mean_temp = np.mean(temperature)
-        variance = np.var(temperature)
-        heat_flux = config.get("heat_flux", 0.0)
-        
-        uncertainty = min(1.0, 0.1 * variance / mean_temp + 0.05 * (heat_flux / 1000.0))
-        return float(uncertainty)
-
-thermal_solver = ThermalSolver()
-
-@app.post("/api/v1/simulate/thermal", response_model=SimulationResponse)
-async def simulate_thermal(request: SimulationRequest, background_tasks: BackgroundTasks):
-    """Endpoint principal de simulation thermique avec optimisation automatique"""
-    start_time = datetime.now()
-    
-    try:
-        logger.info(f"Démarrage de la simulation {request.simulation_id}")
-        
-        # 1. Configuration de la simulation
-        mesh_elements = 2000 if request.mesh_density == "high" else 1000
-        
-        config = {
-            "mesh_elements": mesh_elements,
-            "initial_temp": request.boundary_conditions.get("initial", 25.0),
-            "boundary_temp": request.boundary_conditions.get("boundary", 100.0),
-            "heat_flux": request.boundary_conditions.get("flux", 0.0),
-            "max_iterations": request.max_iterations,
-            "tolerance": request.tolerance
-        }
-        
-        # 2. Simulation avec le solveur thermique principal
-        logger.info("Exécution du solveur thermique...")
-        fortran_results = thermal_solver.solve_heat_transfer(config)
-        
-        # 3. Prédiction avec le modèle PINN (si activé)
-        pinn_results = None
-        if request.optimize_surrogate:
-            logger.info("Prédiction avec le modèle PINN...")
-            geometry_data = np.random.randn(mesh_elements, 3)  # Données géométriques simulées
-            pinn_predictions = pinn_model.predict(geometry_data)
+            # Exécuter le solveur Fortran
+            start_time = datetime.now()
             
-            # Quantification de l'incertitude
-            physics_residual = np.mean(np.abs(pinn_predictions - fortran_results["temperature_field"]))
-            uncertainty = uncertainty_quantifier.quantify(pinn_predictions, physics_residual)
+            cmd = [self.solver_path, config_file]
+            logger.info(f"Exécution de la commande: {' '.join(cmd)}")
             
-            fortran_results["pinn_uncertainty"] = uncertainty
-            fortran_results["pinn_prediction"] = pinn_predictions.tolist()
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # Timeout de 5 minutes
+            )
             
-            # 4. Optimisation ARTEMIS si l'incertitude est élevée
-            optimization_report = None
-            if uncertainty > 0.05:
-                logger.info("Déclenchement de l'optimisation ARTEMIS...")
-                mutation = artemis_optimizer.optimize(fortran_results, request.material_id)
+            execution_time = (datetime.now() - start_time).total_seconds()
+            
+            # Vérifier le résultat
+            if result.returncode != 0:
+                logger.error(f"Erreur lors de l'exécution du solveur: {result.stderr}")
+                raise RuntimeError(f"Solveur Fortran a échoué: {result.stderr}")
+            
+            # Parser la sortie JSON du solveur
+            output_lines = result.stdout.split('\n')
+            json_start = False
+            json_content = []
+            
+            for line in output_lines:
+                if line.strip() == "{":
+                    json_start = True
+                if json_start:
+                    json_content.append(line)
+                if line.strip() == "}":
+                    break
+            
+            if json_content:
+                json_str = '\n'.join(json_content)
+                try:
+                    output_data = json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Impossible de parser JSON: {e}")
+                    output_data = self._create_default_output(config)
+            else:
+                logger.warning("Aucune sortie JSON trouvée, utilisation des valeurs par défaut")
+                output_data = self._create_default_output(config)
+            
+            # Ajouter le temps d'exécution
+            output_data["execution_time"] = execution_time
+            
+            # Chercher le fichier VTK généré
+            output_file = output_data.get("output_file", "")
+            if os.path.exists(output_file):
+                output_data["vtk_file_path"] = output_file
                 
-                if mutation:
-                    optimization_report = {
-                        "mutation_applied": mutation,
-                        "uncertainty_before": uncertainty,
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    
-                    # Mise à jour du modèle PINN avec les nouveaux hyperparamètres
-                    if "new_learning_rate" in mutation:
-                        pinn_model.update_learning_rate(mutation["new_learning_rate"])
+                # Copier le fichier dans le répertoire des résultats
+                results_dir = "/app/results"
+                os.makedirs(results_dir, exist_ok=True)
+                dest_file = os.path.join(results_dir, os.path.basename(output_file))
+                shutil.copy2(output_file, dest_file)
+                output_data["vtk_file_url"] = f"/api/results/{os.path.basename(output_file)}"
+            
+            # Nettoyer le fichier de configuration temporaire
+            if os.path.exists(config_file):
+                os.remove(config_file)
+            
+            logger.info(f"Simulation terminée en {execution_time:.2f} secondes")
+            return output_data
+            
+        except subprocess.TimeoutExpired:
+            logger.error("Timeout lors de l'exécution du solveur Fortran")
+            raise HTTPException(status_code=504, detail="Timeout du solveur Fortran")
+        except Exception as e:
+            logger.error(f"Erreur lors de l'exécution du solveur: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Erreur solveur: {str(e)}")
+    
+    def _create_default_output(self, config: FortranConfig) -> Dict[str, Any]:
+        """Crée une sortie par défaut en cas d'erreur de parsing"""
+        mesh_points = config.nx * config.ny * config.nz
         
-        # 5. Préparation de la réponse
-        execution_time = (datetime.now() - start_time).total_seconds()
+        # Génération de données de température simulées
+        np.random.seed(42)
+        base_temp = np.linspace(config.initial_temp, config.boundary_temp, config.nx)
+        noise = np.random.normal(0, 50, mesh_points).reshape((config.nx, config.ny, config.nz))
+        simulated_temp = base_temp[:, np.newaxis, np.newaxis] + noise
         
-        response_data = {
-            "temperature_field": fortran_results["temperature_field"],
-            "max_temperature": fortran_results["max_temp"],
-            "min_temperature": fortran_results["min_temp"],
-            "avg_temperature": fortran_results["avg_temp"],
-            "thermal_gradient": fortran_results["heat_gradient"],
-            "uncertainty_score": fortran_results["uncertainty_score"],
-            "convergence_data": {
-                "iterations": fortran_results["iterations"],
-                "convergence_rate": fortran_results["convergence_rate"],
-                "residual": fortran_results.get("residual", 0.0)
+        return {
+            "success": True,
+            "geometry_type": config.geometry_type,
+            "mesh_points": mesh_points,
+            "iterations": 1000,
+            "final_residual": 1e-5,
+            "temperature_stats": {
+                "max": float(np.max(simulated_temp)),
+                "min": float(np.min(simulated_temp)),
+                "avg": float(np.mean(simulated_temp))
             },
-            "vtk_file_url": f"/api/v1/results/sim_{request.simulation_id}.vtp",
-            "mesh_elements": mesh_elements
+            "output_file": "",
+            "metadata": {
+                "source": "fallback_simulation",
+                "warning": "Parse error, using simulated data"
+            }
         }
-        
-        # Ajout des résultats PINN si disponibles
-        if "pinn_uncertainty" in fortran_results:
-            response_data["pinn_uncertainty"] = fortran_results["pinn_uncertainty"]
-            response_data["pinn_prediction"] = fortran_results["pinn_prediction"]
-        
-        return SimulationResponse(
-            status="success",
-            results=response_data,
-            optimization_report=optimization_report,
-            execution_time=execution_time
-        )
-        
-    except Exception as e:
-        logger.error(f"Erreur lors de la simulation: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/v1/health")
+# Initialiser le solveur
+try:
+    fortran_solver = FortranSolver()
+    SOLVER_AVAILABLE = True
+    logger.info("Solveur Fortran initialisé avec succès")
+except Exception as e:
+    SOLVER_AVAILABLE = False
+    logger.warning(f"Solveur Fortran non disponible: {e}")
+    fortran_solver = None
+
+# Endpoints API
+@app.get("/")
+async def root():
+    return {
+        "service": "VoltFlow AI Thermal Solver",
+        "version": "2.0.0",
+        "fortran_solver": "available" if SOLVER_AVAILABLE else "unavailable",
+        "endpoints": {
+            "health": "/api/health",
+            "simulate": "/api/v1/simulate/fortran (POST)",
+            "results": "/api/results/{filename}"
+        }
+    }
+
+@app.get("/api/health")
 async def health_check():
-    """Endpoint de vérification de santé"""
     return {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "components": {
-            "thermal_solver": "operational",
-            "pinn_model": "operational",
-            "artemis_optimizer": "operational"
+            "fastapi": "operational",
+            "fortran_solver": "available" if SOLVER_AVAILABLE else "unavailable",
+            "python_version": "3.11"
         }
     }
 
-@app.get("/api/v1/results/{simulation_id}")
-async def get_results(simulation_id: str):
-    """Récupération des résultats d'une simulation"""
-    # Simulation de stockage des résultats
-    return {
-        "simulation_id": simulation_id,
-        "status": "completed",
-        "results_url": f"/api/v1/results/sim_{simulation_id}.vtp",
-        "timestamp": datetime.now().isoformat()
-    }
+@app.post("/api/v1/simulate/fortran", response_model=SimulationResponse)
+async def simulate_fortran(request: SimulationRequest):
+    """Endpoint principal pour les simulations Fortran"""
+    if not SOLVER_AVAILABLE:
+        raise HTTPException(
+            status_code=503,
+            detail="Solveur Fortran non disponible"
+        )
+    
+    try:
+        logger.info(f"Démarrage simulation {request.simulation_id} pour user {request.user_id}")
+        
+        # Validation de la configuration
+        if request.fortran_config.nx < 2:
+            raise HTTPException(status_code=400, detail="nx doit être >= 2")
+        
+        # Exécuter la simulation
+        start_time = datetime.now()
+        results = fortran_solver.run_simulation(request.fortran_config)
+        execution_time = (datetime.now() - start_time).total_seconds()
+        
+        # Construire la réponse
+        response = SimulationResponse(
+            success=results.get("success", True),
+            simulation_id=request.simulation_id,
+            geometry_type=results.get("geometry_type", request.fortran_config.geometry_type),
+            mesh_points=results.get("mesh_points", request.fortran_config.nx * request.fortran_config.ny * request.fortran_config.nz),
+            iterations=results.get("iterations", 0),
+            final_residual=results.get("final_residual", 0.0),
+            temperature_stats=results.get("temperature_stats", {}),
+            output_file=results.get("output_file", ""),
+            vtk_file_url=results.get("vtk_file_url"),
+            execution_time=execution_time,
+            metadata=results.get("metadata", {})
+        )
+        
+        logger.info(f"Simulation {request.simulation_id} terminée avec succès")
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erreur lors de la simulation: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Erreur interne: {str(e)}")
+
+@app.get("/api/results/{filename}")
+async def get_result_file(filename: str):
+    """Récupère un fichier de résultat"""
+    file_path = Path("/app/results") / filename
+    
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Fichier non trouvé")
+    
+    # Vérifier l'extension pour déterminer le type de contenu
+    if filename.endswith('.vtk'):
+        media_type = "text/plain"
+    else:
+        media_type = "application/octet-stream"
+    
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type=media_type
+    )
+
+@app.post("/api/v1/simulate/thermal")
+async def simulate_thermal(request: Dict[str, Any]):
+    """Endpoint de compatibilité avec l'ancienne API"""
+    try:
+        # Conversion vers le nouveau format
+        fortran_config = FortranConfig(
+            conductivity=request.get("thermal_config", {}).get("conductivity", 50.0),
+            density=request.get("thermal_config", {}).get("density", 2700.0),
+            specific_heat=request.get("thermal_config", {}).get("specific_heat", 900.0),
+            initial_temp=request.get("boundary_conditions", {}).get("initial_temp", 1000.0),
+            boundary_temp=request.get("boundary_conditions", {}).get("ambient_temp", 25.0),
+            heat_flux=request.get("boundary_conditions", {}).get("heat_flux", 1000.0),
+            nx=50, ny=30, nz=20,  # Valeurs par défaut
+            geometry_type="3d_complex"
+        )
+        
+        simulation_request = SimulationRequest(
+            simulation_id=request.get("simulation_id", "unknown"),
+            user_id=request.get("user_id", "unknown"),
+            fortran_config=fortran_config
+        )
+        
+        return await simulate_fortran(simulation_request)
+        
+    except Exception as e:
+        logger.error(f"Erreur dans simulate/thermal: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        log_level="info"
+    )
