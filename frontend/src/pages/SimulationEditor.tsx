@@ -1,12 +1,17 @@
-// src/pages/SimulationEditor.tsx - VERSION CORRIGÉE
+// src/pages/SimulationEditor.tsx - VERSION CORRIGÉE COMPLÈTE
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
+
+// ✅ IMPORTS LUCIDE-REACT CORRIGÉS (noms exacts)
 import { 
   Save, Play, Download, Trash2, Thermometer, Loader2, AlertCircle, 
-  ChevronLeft, UploadCloud, Box, Settings, Eye, EyeOff, Grid3X3, 
+  ChevronLeft, UploadCloud, Box, Settings, Eye, EyeOff, Grid3x3, 
   Maximize2, Minimize2, Copy, FileUp, CheckCircle, XCircle, 
-  TestTube, ShieldAlert, Cpu, Box as BoxIcon, Cube, Square, BarChart3
+  FlaskConical, Shield, Cpu, Cube, Square, BarChart3,
+  // Note: 'Grid3X3' doit être 'Grid3x3' (minuscule 'x')
+  // Note: 'ShieldAlert' n'existe pas, utiliser 'Shield'
+  // Note: 'TestTube' n'existe pas, utiliser 'FlaskConical'
 } from 'lucide-react';
 
 // Services et hooks
@@ -101,7 +106,7 @@ export default function SimulationEditor() {
     };
   }, []);
 
-  // ✅ FONCTIONS DE DÉTECTION
+  // ✅ FONCTIONS DE DÉTECTION CORRIGÉES
   const detectGeometryType = (fileName: string): '1d_rod' | '2d_plate' | '3d_complex' => {
     const lowerName = fileName.toLowerCase();
     if (lowerName.includes('rod') || lowerName.includes('1d') || lowerName.includes('bar')) {
@@ -125,7 +130,7 @@ export default function SimulationEditor() {
       case '1d_rod': return BarChart3;
       case '2d_plate': return Square;
       case '3d_complex': return Cube;
-      default: return BoxIcon;
+      default: return Box;
     }
   };
 
@@ -321,8 +326,8 @@ export default function SimulationEditor() {
 
           // ✅ DÉTECTION AUTOMATIQUE DU TYPE DE GÉOMÉTRIE
           const geometryType = detectGeometryType(result.fileName);
-          const fileExt = result.fileName.toLowerCase().split('.').pop() || '';
-          const recommendedSolver = detectRecommendedSolver(geometryType, fileExt);
+          const fileExtension = result.fileName.toLowerCase().split('.').pop() || '';
+          const recommendedSolver = detectRecommendedSolver(geometryType, fileExtension);
           const GeometryIcon = getGeometryIcon(geometryType);
 
           // Mise à jour du formulaire AVEC DÉTECTION AUTOMATIQUE
@@ -571,7 +576,7 @@ export default function SimulationEditor() {
             <CardTitle>Visualisation 3D</CardTitle>  
             <div className="flex items-center space-x-2">  
               <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showGrid: !prev.showGrid }))} title="Afficher/Masquer Grille">  
-                {viewState.showGrid ? <Grid3X3 className="h-4 w-4" /> : <Grid3X3 className="h-4 w-4 text-muted-foreground" />}  
+                {viewState.showGrid ? <Grid3x3 className="h-4 w-4" /> : <Grid3x3 className="h-4 w-4 text-muted-foreground" />}  
               </Button>  
               <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showAxes: !prev.showAxes }))} title="Afficher/Masquer Axes">  
                 {viewState.showAxes ? <Box className="h-4 w-4" /> : <Box className="h-4 w-4 text-muted-foreground" />}  
@@ -680,7 +685,7 @@ export default function SimulationEditor() {
                 )}  
                 {uploadError && (  
                   <Alert variant="destructive" className="mt-2">  
-                    <ShieldAlert className="h-4 w-4" />  
+                    <Shield className="h-4 w-4" />  
                     <AlertDescription>{uploadError}</AlertDescription>  
                   </Alert>  
                 )}  
