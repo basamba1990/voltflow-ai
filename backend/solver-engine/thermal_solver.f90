@@ -1,4 +1,9 @@
-! thermal_solver_nd.f90 - Solveur thermique industriel 1D/2D/3D
+! ============================================================================
+! THERMAL SOLVER FORTRAN - Version 2.0
+! Solveur thermique industriel 1D/2D/3D
+! Compatible avec l'API Python et l'interface web
+! ============================================================================
+
 module thermal_solver_nd
     implicit none
     integer, parameter :: dp = kind(1.0d0)
@@ -49,7 +54,7 @@ contains
 ! ----------------------------------------------------------------------
 subroutine initialize_solver()
     print *, "========================================"
-    print *, "THERMAL SOLVER ND - Version 1.0"
+    print *, "THERMAL SOLVER ND - Version 2.0"
     print *, "Solveur thermique industriel 1D/2D/3D"
     print *, "========================================"
 end subroutine initialize_solver
@@ -63,14 +68,14 @@ subroutine cleanup_solver(result)
 end subroutine cleanup_solver
 
 ! ----------------------------------------------------------------------
-! Résolution équation de la chaleur ND
+! Résolution équation de la chaleur ND - CORRIGÉE
 ! ----------------------------------------------------------------------
 subroutine solve_heat_transfer_nd(cfg, result)
     type(SimulationConfig), intent(in) :: cfg
     type(SimulationResult), intent(out) :: result
     
     integer :: i, j, k, iter
-    real(dp) :: alpha, dx, dy, dz, residual
+    real(dp) :: alpha, dx, dy, dz, residual, laplacian
     real(dp), allocatable :: Tnew(:,:,:)
     
     ! Allocations dynamiques
@@ -106,15 +111,25 @@ subroutine solve_heat_transfer_nd(cfg, result)
     do iter = 1, cfg%max_iterations
         residual = 0.0_dp
         
-        ! Schéma explicite ND
+        ! Schéma explicite ND - VERSION CORRIGÉE
         do k = 2, max(2, cfg%nz-1)
             do j = 2, max(2, cfg%ny-1)
                 do i = 2, cfg%nx-1
-                    ! Laplacien ND
-                    Tnew(i,j,k) = result%T(i,j,k) + alpha * cfg%dt * ( &
-                        (result%T(i+1,j,k) - 2.0_dp*result%T(i,j,k) + result%T(i-1,j,k)) / (dx*dx) + &
-                        (cfg%ny > 1 ? (result%T(i,j+1,k) - 2.0_dp*result%T(i,j,k) + result%T(i,j-1,k)) / (dy*dy) : 0.0_dp) + &
-                        (cfg%nz > 1 ? (result%T(i,j,k+1) - 2.0_dp*result%T(i,j,k) + result%T(i,j,k-1)) / (dz*dz) : 0.0_dp) )
+                    ! Laplacien ND - Version corrigée sans opérateur ternaire
+                    laplacian = (result%T(i+1,j,k) - 2.0_dp*result%T(i,j,k) + result%T(i-1,j,k)) / (dx*dx)
+                    
+                    ! Terme en Y si ny > 1
+                    if (cfg%ny > 1) then
+                        laplacian = laplacian + (result%T(i,j+1,k) - 2.0_dp*result%T(i,j,k) + result%T(i,j-1,k)) / (dy*dy)
+                    end if
+                    
+                    ! Terme en Z si nz > 1
+                    if (cfg%nz > 1) then
+                        laplacian = laplacian + (result%T(i,j,k+1) - 2.0_dp*result%T(i,j,k) + result%T(i,j,k-1)) / (dz*dz)
+                    end if
+                    
+                    ! Mise à jour de la température
+                    Tnew(i,j,k) = result%T(i,j,k) + alpha * cfg%dt * laplacian
                     
                     ! Mise à jour résidu
                     residual = residual + abs(Tnew(i,j,k) - result%T(i,j,k))
@@ -137,18 +152,19 @@ subroutine solve_heat_transfer_nd(cfg, result)
     result%min_temp = minval(result%T)
     result%avg_temp = sum(result%T) / real(size(result%T), dp)
     result%final_residual = residual
-    result%iterations = iter
+    result%iterations = min(iter, cfg%max_iterations)
     result%geometry_type = cfg%geometry_type
     
     ! Nettoyage temporaire
     deallocate(Tnew)
     
     print *, "Solveur terminé:"
-    print *, "  Itérations:    ", iter
-    print *, "  Résidu final:  ", residual
+    print *, "  Itérations:    ", result%iterations
+    print *, "  Résidu final:  ", result%final_residual
     print *, "  T_max:         ", result%max_temp, "°C"
     print *, "  T_min:         ", result%min_temp, "°C"
     print *, "  T_moy:         ", result%avg_temp, "°C"
+    print *, "  Maillage:      ", cfg%nx, "x", cfg%ny, "x", cfg%nz
     
 end subroutine solve_heat_transfer_nd
 
@@ -200,44 +216,110 @@ end subroutine export_to_vtk_nd
 
 end module thermal_solver_nd
 
-! ----------------------------------------------------------------------
-! Programme principal (optionnel - pour tests standalone)
-! ----------------------------------------------------------------------
-program test_thermal_solver
+! ============================================================================
+! PROGRAMME PRINCIPAL - STANDALONE AVEC INTERFACE SIMPLE
+! ============================================================================
+
+program thermal_solver
     use thermal_solver_nd
     implicit none
     
     type(SimulationConfig) :: cfg
     type(SimulationResult) :: res
+    character(len=200) :: config_file, output_dir
+    integer :: io_status
+    logical :: file_exists
     
-    ! Configuration exemple
-    cfg%conductivity = 50.0_dp
+    ! Définition des paramètres par défaut
+    cfg%conductivity = 50.0_dp      ! Aluminium
     cfg%density = 2700.0_dp
     cfg%specific_heat = 900.0_dp
     cfg%initial_temp = 1000.0_dp
     cfg%boundary_temp = 25.0_dp
     cfg%heat_flux = 1000.0_dp
-    cfg%nx = 50
+    cfg%nx = 100
     cfg%ny = 1
     cfg%nz = 1
-    cfg%max_iterations = 1000
+    cfg%max_iterations = 5000
     cfg%dt = 0.1_dp
     cfg%tolerance = 1.0e-6_dp
     cfg%geometry_type = '1d_rod'
-    cfg%output_file = 'result_1d.vtk'
+    cfg%output_file = 'thermal_results.vtk'
+    
+    ! Vérification des arguments en ligne de commande
+    if (command_argument_count() > 0) then
+        call get_command_argument(1, config_file)
+        
+        ! Lecture depuis fichier de configuration
+        inquire(file=trim(config_file), exist=file_exists)
+        if (file_exists) then
+            open(unit=10, file=trim(config_file), status='old', action='read', iostat=io_status)
+            if (io_status == 0) then
+                read(10, *) cfg%conductivity
+                read(10, *) cfg%density
+                read(10, *) cfg%specific_heat
+                read(10, *) cfg%initial_temp
+                read(10, *) cfg%boundary_temp
+                read(10, *) cfg%heat_flux
+                read(10, *) cfg%nx, cfg%ny, cfg%nz
+                read(10, *) cfg%max_iterations
+                read(10, *) cfg%dt
+                read(10, *) cfg%tolerance
+                read(10, '(A)') cfg%geometry_type
+                read(10, '(A)') cfg%output_file
+                close(10)
+                print *, "Configuration chargée depuis: ", trim(config_file)
+            end if
+        end if
+    end if
     
     ! Initialisation
     call initialize_solver()
     
+    ! Validation des paramètres
+    if (cfg%nx < 2) cfg%nx = 2
+    if (cfg%ny < 1) cfg%ny = 1
+    if (cfg%nz < 1) cfg%nz = 1
+    if (cfg%dt <= 0.0_dp) cfg%dt = 0.1_dp
+    
+    print *, "Configuration:"
+    print *, "  Matériau:        ", cfg%conductivity, " W/m·K"
+    print *, "  Géométrie:       ", trim(cfg%geometry_type)
+    print *, "  Maillage:        ", cfg%nx, "x", cfg%ny, "x", cfg%nz
+    print *, "  T_initial:       ", cfg%initial_temp, "°C"
+    print *, "  T_boundary:      ", cfg%boundary_temp, "°C"
+    print *, "  Flux:            ", cfg%heat_flux, " W/m²"
+    
     ! Résolution
+    print *, ""
+    print *, "Démarrage du calcul..."
     call solve_heat_transfer_nd(cfg, res)
     
     ! Export VTK
-    call export_to_vtk_nd(res%T, cfg%output_file, cfg%geometry_type)
+    if (len_trim(cfg%output_file) > 0) then
+        call export_to_vtk_nd(res%T, cfg%output_file, cfg%geometry_type)
+    else
+        call export_to_vtk_nd(res%T, 'thermal_results.vtk', cfg%geometry_type)
+    end if
     
     ! Nettoyage
     call cleanup_solver(res)
     
-    print *, "Test terminé avec succès!"
+    ! Sortie pour l'API
+    print *, ""
+    print *, "RÉSULTATS FINAUX:"
+    print *, "{"
+    print *, '  "success": true,'
+    print *, '  "geometry_type": "' // trim(cfg%geometry_type) // '",'
+    print *, '  "mesh_points": ', cfg%nx * cfg%ny * cfg%nz, ','
+    print *, '  "iterations": ', res%iterations, ','
+    print *, '  "final_residual": ', res%final_residual, ','
+    print *, '  "temperature_stats": {'
+    print *, '    "max": ', res%max_temp, ','
+    print *, '    "min": ', res%min_temp, ','
+    print *, '    "avg": ', res%avg_temp
+    print *, '  },'
+    print *, '  "output_file": "' // trim(cfg%output_file) // '"'
+    print *, "}"
     
-end program test_thermal_solver
+end program thermal_solver
