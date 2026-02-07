@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import logging
