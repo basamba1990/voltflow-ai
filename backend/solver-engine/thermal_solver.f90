@@ -4,13 +4,19 @@
 ! Compatible avec l'API Python et l'interface web
 ! ============================================================================
 
-module thermal_solver_nd
+module precision_mod
     implicit none
     integer, parameter :: dp = kind(1.0d0)
+end module precision_mod
+
+module thermal_solver_nd
+    use precision_mod
+    implicit none
     private
     public :: SimulationConfig, SimulationResult
     public :: initialize_solver, solve_heat_transfer_nd
     public :: export_to_vtk_nd, cleanup_solver
+    public :: dp
 
     type :: SimulationConfig
         ! Propriétés matériau
@@ -221,6 +227,7 @@ end module thermal_solver_nd
 ! ============================================================================
 
 program thermal_solver
+    use precision_mod
     use thermal_solver_nd
     implicit none
     
