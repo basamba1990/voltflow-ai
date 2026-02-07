@@ -1,5 +1,9 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, useReducer } from 'react';
-import { Loader2, Maximize2, Minimize2, Eye, EyeOff, Box, Settings, Thermometer, Grid3x3 } from 'lucide-react';
+import { Loader2, Maximize2, Minimize2, Eye, EyeOff, Box, // Utilisé pour showAxes et geometry 3D
+  Settings, 
+  Thermometer, 
+  Grid3x3 
+} from 'lucide-react';
 
 // Types pour les simulations industrielles
 export type IndustrialFieldType = 
