@@ -481,6 +481,8 @@ export const uploadGeometry = async (params: {
         fileData: base64String,
         userId: userId,
         simulation_id: params.simulationId,
+        // S'assurer que le chemin est préfixé par l'ID utilisateur pour la RLS
+        path: `${userId}/${Date.now()}_${params.file.name}`
       },
     });
 
