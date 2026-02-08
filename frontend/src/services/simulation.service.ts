@@ -312,11 +312,14 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
 
     console.log('✅ Statut mis à jour à "running"');
 
-    // 5. APPEL EDGE FUNCTION (TIMEOUT 60s)
+    // 5. APPEL EDGE FUNCTION (TIMEOUT 120s)
     console.log('📡 Appel Edge Function simulate...');
     
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    const timeoutId = setTimeout(() => {
+      console.warn('⏱️ Timeout déclenché après 120s');
+      controller.abort();
+    }, 120000);
 
     try {
       const { data: edgeFunctionData, error: edgeFunctionError } = await supabase.functions.invoke('simulate', {
