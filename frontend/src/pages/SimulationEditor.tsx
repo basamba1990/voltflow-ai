@@ -381,6 +381,17 @@ export default function SimulationEditor() {
           );
           
           refresh(); // Rafraîchir les données de la simulation  
+          
+          // ✅ DÉCLENCHEMENT AUTOMATIQUE DE LA SIMULATION APRÈS UPLOAD
+          console.log('🚀 Lancement automatique de la simulation...');
+          try {
+            await startSimulationHook(id);
+            toast.success('Simulation lancée automatiquement !');
+          } catch (simError: any) {
+            console.error('❌ Erreur lancement automatique:', simError);
+            toast.error(`Upload réussi mais échec du lancement: ${simError.message}`);
+          }
+
           return result;  
         } catch (innerError: any) {  
           clearInterval(progressInterval);  
