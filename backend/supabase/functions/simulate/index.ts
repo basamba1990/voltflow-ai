@@ -14,9 +14,18 @@ Deno.serve(async (req) => {
   let userId: string | null = null;
 
   try {
-    const body = await req.json();
+    // Lecture sécurisée du body
+    const bodyText = await req.text();
+    if (!bodyText) throw new Error("Empty request body");
     
-    // Détection du type d'appel
+    let body;
+    try {
+      body = JSON.parse(bodyText);
+    } catch (e) {
+      throw new Error("Invalid JSON input");
+    }
+    
+    // Détection du type d'appel (Webhook Supabase ou Appel Direct)
     if (body.type === 'INSERT' && body.table === 'simulations') {
       simId = body.record.id;
       userId = body.record.user_id;
@@ -40,8 +49,10 @@ Deno.serve(async (req) => {
       .single();
 
     if (simError || !sim) throw new Error("Simulation not found");
+    
+    // Éviter les boucles infinies si déjà en cours (pour les webhooks)
     if (sim.status === 'completed' || sim.status === 'running') {
-        if (body.type === 'INSERT') return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
+        if (body.type === 'INSERT') return new Response(JSON.stringify({ success: true, message: "Already processed" }), { headers: corsHeaders });
     }
 
     // 2. Mettre à jour le statut
@@ -50,8 +61,9 @@ Deno.serve(async (req) => {
     // 3. Appeler le backend externe (Render)
     const BACKEND_URL = Deno.env.get('BACKEND_URL') || "https://voltflow-backend.onrender.com";
     
+    // Mapping des propriétés thermiques (correction des noms de colonnes DB)
     const fortranConfig = {
-      conductivity: sim.materials?.conductivity || 50.0,
+      conductivity: sim.materials?.thermal_conductivity || 50.0,
       density: sim.materials?.density || 2700.0,
       specific_heat: sim.materials?.specific_heat || 900.0,
       initial_temp: sim.boundary_conditions?.initial_temp || 1000.0,
@@ -60,6 +72,8 @@ Deno.serve(async (req) => {
       nx: 100, ny: 1, nz: 1,
       geometry_type: sim.geometry_type === 'simple' ? '1d_rod' : '3d_complex'
     };
+
+    console.log(`Calling backend: ${BACKEND_URL}/api/v1/simulate/fortran`);
 
     const response = await fetch(`${BACKEND_URL}/api/v1/simulate/fortran`, {
       method: 'POST',
@@ -73,33 +87,44 @@ Deno.serve(async (req) => {
 
     if (!response.ok) {
         const errorText = await response.text();
-        throw new Error(`Backend error: ${errorText}`);
+        throw new Error(`Backend error: ${response.status} - ${errorText}`);
     }
 
     const result = await response.json();
 
     // 4. Télécharger le fichier VTK depuis le backend et l'uploader sur Supabase Storage
     if (result.vtk_file_url) {
-        const vtkRes = await fetch(`${BACKEND_URL}${result.vtk_file_url}`);
+        // Construction de l'URL complète si relative
+        const vtkUrl = result.vtk_file_url.startsWith('http') 
+            ? result.vtk_file_url 
+            : `${BACKEND_URL}${result.vtk_file_url}`;
+            
+        const vtkRes = await fetch(vtkUrl);
+        if (!vtkRes.ok) throw new Error("Failed to download VTK result from backend");
+        
         const vtkBlob = await vtkRes.blob();
         const filePath = `${userId}/${simId}_result.vtk`;
         
-        await supabase.storage.from('simulation-files').upload(filePath, vtkBlob, {
+        const { error: uploadError } = await supabase.storage.from('simulation-files').upload(filePath, vtkBlob, {
             contentType: 'application/octet-stream',
             upsert: true
         });
 
+        if (uploadError) throw new Error(`Storage upload error: ${uploadError.message}`);
+
         const { data: urlData } = supabase.storage.from('simulation-files').getPublicUrl(filePath);
 
         // 5. Sauvegarder les résultats
-        await supabase.from('simulation_results').insert({
+        const { error: insertError } = await supabase.from('simulation_results').insert({
             simulation_id: simId,
             user_id: userId,
-            max_temperature: result.temperature_stats.max,
-            min_temperature: result.temperature_stats.min,
-            average_temperature: result.temperature_stats.avg,
+            max_temperature: result.temperature_stats?.max || 0,
+            min_temperature: result.temperature_stats?.min || 0,
+            average_temperature: result.temperature_stats?.avg || 0,
             result_files: { vtk_url: urlData.publicUrl, source: 'fortran_solver' }
         });
+        
+        if (insertError) throw new Error(`Result insertion error: ${insertError.message}`);
     }
 
     // 6. Finaliser
@@ -112,11 +137,17 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ success: true }), { headers: corsHeaders });
 
   } catch (error: any) {
-    console.error(error);
+    console.error("Function Error:", error.message);
     if (simId) {
         const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
-        await supabase.from('simulations').update({ status: 'failed', error_message: error.message }).eq('id', simId);
+        await supabase.from('simulations').update({ 
+            status: 'failed', 
+            error_message: error.message 
+        }).eq('id', simId);
     }
-    return new Response(JSON.stringify({ success: false, error: error.message }), { status: 500, headers: corsHeaders });
+    return new Response(JSON.stringify({ success: false, error: error.message }), { 
+        status: 500, 
+        headers: corsHeaders 
+    });
   }
 });
