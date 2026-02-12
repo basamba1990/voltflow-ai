@@ -1,6 +1,6 @@
 """
 BRIDGE API - Interface Python/Fortran pour le solveur thermique
-Version: 2.2 - CORRIGÉE (Path & Output fixes)
+Version: 2.3 - CORRIGÉE (Route Alignment & Path fixes)
 """
 
 import numpy as np
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(
     title="VoltFlow AI Thermal Solver API",
     description="API de simulation thermique avec solveur Fortran ND",
-    version="2.2.0",
+    version="2.3.0",
     docs_url="/api/docs",
     redoc_url="/api/redoc"
 )
@@ -75,7 +75,6 @@ class SimulationResponse(BaseModel):
 # Classe pour exécuter le solveur Fortran
 class FortranSolver:
     def __init__(self, solver_path: str = "/app/backend/solver-engine/thermal_solver.exe"):
-        # ✅ CORRECTION : Chemins possibles pour le solveur (Docker vs Local)
         possible_paths = [
             solver_path,
             os.path.join(os.getcwd(), "thermal_solver.exe"),
@@ -94,17 +93,15 @@ class FortranSolver:
         os.makedirs(self.results_dir, exist_ok=True)
         
         if not self.solver_path:
-            logger.error("Solveur Fortran introuvable dans les chemins spécifiés.")
+            logger.error("Solveur Fortran introuvable.")
         else:
             logger.info(f"Solveur Fortran initialisé: {self.solver_path}")
     
     def run_simulation(self, config: FortranConfig) -> Dict[str, Any]:
-        """Exécute le solveur Fortran avec la configuration donnée"""
         if not self.solver_path or not os.path.exists(self.solver_path):
             raise RuntimeError(f"Solveur Fortran introuvable")
 
         try:
-            # Créer un fichier de configuration temporaire
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             config_file = os.path.join(self.temp_dir, f"config_{timestamp}.txt")
             output_filename = f"thermal_results_{timestamp}.vtk"
@@ -123,36 +120,19 @@ class FortranSolver:
                 f.write(f"{config.geometry_type}\n")
                 f.write(f"{output_filename}\n")
             
-            # Exécuter le solveur Fortran
             start_time = datetime.now()
             os.chmod(self.solver_path, 0o755)
             
             cmd = [self.solver_path, config_file]
-            logger.info(f"Exécution: {' '.join(cmd)}")
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                cwd=self.temp_dir
-            )
-            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, cwd=self.temp_dir)
             execution_time = (datetime.now() - start_time).total_seconds()
             
             if result.returncode != 0:
-                logger.error(f"Erreur solveur: {result.stderr}")
                 raise RuntimeError(f"Solveur Fortran a échoué: {result.stderr}")
             
-            # ✅ CORRECTION : Extraction JSON robuste de la sortie standard
-            output_data = self._parse_json_output(result.stdout)
-            if not output_data:
-                logger.warning("Sortie JSON non trouvée, fallback par défaut")
-                output_data = self._create_default_output(config)
-            
+            output_data = self._parse_json_output(result.stdout) or self._create_default_output(config)
             output_data["execution_time"] = execution_time
             
-            # Gestion du fichier VTK
             vtk_path = os.path.join(self.temp_dir, output_filename)
             if os.path.exists(vtk_path):
                 dest_file = os.path.join(self.results_dir, output_filename)
@@ -161,16 +141,12 @@ class FortranSolver:
                 output_data["output_file"] = output_filename
                 os.remove(vtk_path)
             
-            if os.path.exists(config_file):
-                os.remove(config_file)
-            
+            if os.path.exists(config_file): os.remove(config_file)
             return output_data
             
-        except subprocess.TimeoutExpired:
-            raise HTTPException(status_code=504, detail="Timeout du solveur Fortran")
         except Exception as e:
             logger.error(f"Erreur simulation: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Erreur solveur: {str(e)}")
+            raise HTTPException(status_code=500, detail=str(e))
 
     def _parse_json_output(self, stdout: str) -> Optional[Dict[str, Any]]:
         try:
@@ -181,10 +157,8 @@ class FortranSolver:
                 if line.strip() == "{": in_json = True
                 if in_json: json_lines.append(line)
                 if line.strip() == "}": break
-            if json_lines:
-                return json.loads('\n'.join(json_lines))
-        except:
-            pass
+            if json_lines: return json.loads('\n'.join(json_lines))
+        except: pass
         return None
     
     def _create_default_output(self, config: FortranConfig) -> Dict[str, Any]:
@@ -209,10 +183,7 @@ fortran_solver = FortranSolver()
 async def root():
     return {"service": "VoltFlow AI Thermal Solver", "status": "online"}
 
-@app.get("/api/health")
-async def health_check():
-    return {"status": "healthy", "solver": "available" if fortran_solver.solver_path else "unavailable"}
-
+# ✅ CORRECTION CRITIQUE : Alignement exact de la route avec l'appel de la Edge Function
 @app.post("/api/v1/simulate/fortran", response_model=SimulationResponse)
 async def simulate_fortran(request: SimulationRequest):
     if not fortran_solver.solver_path:
