@@ -65,6 +65,17 @@ export interface UploadGeometryResponse {
 }
 
 // -----------------------------------------------------------------------------
+// UTILS
+// -----------------------------------------------------------------------------
+
+const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> => {
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => reject(new Error(errorMessage)), ms);
+  });
+  return Promise.race([promise, timeout]);
+};
+
+// -----------------------------------------------------------------------------
 // FONCTIONS EXPORTÉES
 // -----------------------------------------------------------------------------
 
@@ -218,7 +229,6 @@ export const updateSimulation = async (id: string, params: {
   }
 };
 
-// ✅ VERSION CORRIGÉE DE startSimulation
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
   try {
     console.log(`🚀 [startSimulation] Démarrage simulation ${simulationId}`);
@@ -243,13 +253,6 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       throw new Error('Simulation non trouvée ou accès non autorisé');
     }
 
-    console.log('📋 Simulation chargée:', {
-      id: simulation.id,
-      name: simulation.name,
-      status: simulation.status,
-      hasMaterial: !!simulation.materials
-    });
-
     // 2. VÉRIFIER STATUT
     if (simulation.status === 'running') {
       throw new Error('La simulation est déjà en cours');
@@ -257,13 +260,10 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
     if (simulation.status === 'completed') {
       throw new Error('La simulation est déjà terminée');
     }
-    if (simulation.status === 'failed') {
-      console.log('⚠️ Relance simulation précédemment échouée');
-    }
 
-    // 3. PRÉPARER CONFIGURATION FORTRAN-COMPATIBLE
+    // 3. PRÉPARER CONFIGURATION
     const materialData = simulation.materials || {
-      conductivity: 50.0,
+      thermal_conductivity: 50.0,
       density: 2700.0,
       specific_heat: 900.0
     };
@@ -282,109 +282,34 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       mesh_density: simulation.mesh_density || 'medium',
       solver_type: simulation.solver_type || 'fem_fortran',
       material_properties: {
-        conductivity: materialData.conductivity || 50.0,
+        conductivity: materialData.thermal_conductivity || 50.0,
         density: materialData.density || 2700.0,
         specific_heat: materialData.specific_heat || 900.0
       }
     };
 
-    console.log('📤 Configuration prête pour Edge Function:', {
-      mesh_density: config.mesh_density,
-      solver_type: config.solver_type,
-      has_material_props: !!config.material_properties
-    });
-
     // 4. METTRE À JOUR STATUT
-    const updateResult = await supabase
-      .from('simulations')
-      .update({
-        status: 'running',
-        progress: 10,
-        started_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', simulationId);
+    await supabase.from('simulations').update({
+      status: 'running',
+      progress: 10,
+      started_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    }).eq('id', simulationId);
 
-    if (updateResult.error) {
-      console.error('❌ Erreur mise à jour statut:', updateResult.error);
-      throw new Error(`Échec mise à jour statut: ${updateResult.error.message}`);
-    }
-
-    console.log('✅ Statut mis à jour à "running"');
-
-    // 5. APPEL EDGE FUNCTION (TIMEOUT 120s)
-    console.log('📡 Appel Edge Function simulate...');
-    
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => {
-      console.warn('⏱️ Timeout déclenché après 120s');
-      controller.abort();
-    }, 120000);
-
+    // 5. APPEL EDGE FUNCTION
     try {
-      const { data: edgeFunctionData, error: edgeFunctionError } = await supabase.functions.invoke('simulate', {
-        body: {
-          simulation_id: simulationId,
-          config,
-          user_id: userId
-        },
-        signal: controller.signal
-      });
+      const { data: edgeFunctionData, error: edgeFunctionError } = await withTimeout(
+        supabase.functions.invoke('simulate', {
+          body: { simulation_id: simulationId, config, user_id: userId }
+        }),
+        120000,
+        '❌ Timeout Edge Function (120s)'
+      );
 
-      clearTimeout(timeoutId);
-
-      if (edgeFunctionError) {
-        console.error('❌ Erreur Edge Function:', edgeFunctionError);
-        
-        await supabase
-          .from('simulations')
-          .update({
-            status: 'failed',
-            error_message: edgeFunctionError.message.substring(0, 500),
-            completed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', simulationId);
-        
-        throw new Error(`Impossible de lancer la simulation: ${edgeFunctionError.message}`);
-      }
-
-      console.log('✅ Réponse Edge Function reçue:', {
-        success: edgeFunctionData?.success,
-        status: edgeFunctionData?.status,
-        has_results: !!edgeFunctionData?.results
-      });
+      if (edgeFunctionError) throw edgeFunctionError;
 
       if (!edgeFunctionData?.success) {
-        const errorMsg = edgeFunctionData?.error || 'Erreur inconnue lors de l\'exécution de la simulation';
-        console.error('❌ Edge Function a échoué:', errorMsg);
-        
-        await supabase
-          .from('simulations')
-          .update({
-            status: 'failed',
-            error_message: errorMsg.substring(0, 500),
-            completed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', simulationId);
-        
-        throw new Error(errorMsg);
-      }
-
-      // 6. METTRE À JOUR SI TERMINÉ
-      if (edgeFunctionData.status === 'completed') {
-        console.log('✅ Simulation terminée avec succès, mise à jour base de données');
-        
-        await supabase
-          .from('simulations')
-          .update({
-            status: 'completed',
-            progress: 100,
-            completed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', simulationId);
+        throw new Error(edgeFunctionData?.error || 'Erreur inconnue lors de l\'exécution');
       }
 
       return {
@@ -396,60 +321,20 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       };
 
     } catch (invokeError: any) {
-      clearTimeout(timeoutId);
-      console.error('❌ Erreur lors de l\'appel Edge Function:', invokeError);
-      
-      if (invokeError.name === 'AbortError') {
-        const errorMsg = 'La requête de simulation a expiré (60 secondes).';
-        console.error('⏱️ Timeout:', errorMsg);
-        
-        await supabase
-          .from('simulations')
-          .update({
-            status: 'failed',
-            error_message: errorMsg,
-            completed_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', simulationId);
-        
-        throw new Error(errorMsg);
-      }
-      
-      await supabase
-        .from('simulations')
-        .update({
-          status: 'failed',
-          error_message: invokeError.message.substring(0, 500),
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', simulationId);
-      
+      await supabase.from('simulations').update({
+        status: 'failed',
+        error_message: invokeError.message.substring(0, 500),
+        completed_at: new Date().toISOString()
+      }).eq('id', simulationId);
       throw invokeError;
     }
-
   } catch (error: any) {
     console.error('💥 Erreur critique dans startSimulation:', error);
-    
-    try {
-      await supabase
-        .from('simulations')
-        .update({
-          status: 'failed',
-          error_message: error.message.substring(0, 500),
-          completed_at: new Date().toISOString(),
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', simulationId);
-    } catch (updateError) {
-      console.error('❌ Impossible de mettre à jour le statut à "failed":', updateError);
-    }
-    
     throw error;
   }
 };
 
+// 🔥 CORRECTION CRITIQUE: Le chemin doit commencer par l'ID utilisateur pour la RLS
 export const uploadGeometry = async (params: {
   file: File;
   simulationId: string;
@@ -461,46 +346,51 @@ export const uploadGeometry = async (params: {
     }
 
     const userId = session.session.user.id;
+    const { file, simulationId } = params;
 
-    const allowedTypes = ['stl', 'step', 'stp', 'obj', 'iges', 'igs', 'vtp', 'vti', 'ply', 'vtk', 'vtu'];
-    const fileExt = params.file.name.toLowerCase().split('.').pop();
-    
-    if (!fileExt || !allowedTypes.includes(fileExt)) {
-      throw new Error(`Format non supporté: ${fileExt}. Formats acceptés: ${allowedTypes.join(', ')}`);
-    }
+    // 1. GÉNÉRATION CHEMIN RLS COMPATIBLE
+    const timestamp = Date.now();
+    const uniqueId = Math.random().toString(36).substring(2, 9);
+    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'vtp';
+    const storagePath = `${userId}/${timestamp}_${uniqueId}.${fileExt}`;
 
-    // Lire le fichier en Base64
-    const arrayBuffer = await params.file.arrayBuffer();
+    console.log('📤 Upload vers simulation-files - Chemin:', storagePath);
+
+    // 2. UPLOAD STORAGE AVEC TIMEOUT
+    const { error: uploadError } = await withTimeout(
+      supabase.storage.from('simulation-files').upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: 'application/octet-stream'
+      }),
+      30000,
+      '❌ Supabase Storage upload timeout (30s)'
+    );
+
+    if (uploadError) throw uploadError;
+
+    // 3. APPEL EDGE FUNCTION POUR TRAITEMENT
+    const arrayBuffer = await file.arrayBuffer();
     const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-
-    console.log(`📤 Appel Edge Function upload-geometry pour ${params.file.name}`);
 
     const { data: edgeFunctionData, error: edgeFunctionError } = await supabase.functions.invoke('upload-geometry', {
       body: {
-        fileName: params.file.name,
+        fileName: file.name,
         fileData: base64String,
         userId: userId,
-        simulation_id: params.simulationId,
-        // S'assurer que le chemin est préfixé par l'ID utilisateur pour la RLS
-        path: `${userId}/${Date.now()}_${params.file.name}`
+        simulation_id: simulationId,
+        path: storagePath
       },
     });
 
-    if (edgeFunctionError) {
-      console.error('❌ Erreur Edge Function upload-geometry:', edgeFunctionError);
-      throw new Error(`Échec de l'upload via Edge Function: ${edgeFunctionError.message}`);
-    }
-
-    if (!edgeFunctionData?.success) {
-      throw new Error(edgeFunctionData?.error || 'Erreur inconnue lors de l\'upload de géométrie');
-    }
+    if (edgeFunctionError) throw edgeFunctionError;
 
     return {
       success: true,
       fileUrl: edgeFunctionData.fileUrl,
       fileName: edgeFunctionData.fileName,
       fileSize: edgeFunctionData.fileSize,
-      path: edgeFunctionData.path,
+      path: storagePath,
       geometry_type: edgeFunctionData.geometry_type,
       solver_suggestion: edgeFunctionData.solver_suggestion,
       estimated_dimensions: edgeFunctionData.estimated_dimensions,
@@ -554,7 +444,6 @@ export const unsubscribeFromChannel = (channel: any) => {
   }
 };
 
-// Fonctions utilitaires
 export async function updateSimulationStatus(
   simulationId: string, 
   status: SimulationStatus,
@@ -636,16 +525,11 @@ export async function getUserSimulationStats() {
     };
 
     data.forEach((simulation) => {
-      // Statistiques par statut
       if (stats.byStatus[simulation.status as keyof typeof stats.byStatus] !== undefined) {
         stats.byStatus[simulation.status as keyof typeof stats.byStatus]++;
       }
-      
-      // Statistiques par solveur
       const solver = simulation.solver_type || 'unknown';
       stats.bySolverType[solver] = (stats.bySolverType[solver] || 0) + 1;
-      
-      // Statistiques par densité de maillage
       if (simulation.mesh_density && stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity] !== undefined) {
         stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity]++;
       }
@@ -657,10 +541,6 @@ export async function getUserSimulationStats() {
     throw err;
   }
 }
-
-// -----------------------------------------------------------------------------
-// DEFAULT EXPORT
-// -----------------------------------------------------------------------------
 
 export const SimulationService = {
   getSimulations,
