@@ -14,7 +14,7 @@ Deno.serve(async (req) => {
   let userId: string | null = null;
 
   try {
-    // Lecture sécurisée du body
+    // ✅ CORRECTION CRITIQUE: Lecture sécurisée du JSON pour éviter "Unexpected end of JSON input"
     const bodyText = await req.text();
     if (!bodyText) throw new Error("Empty request body");
     
@@ -61,7 +61,7 @@ Deno.serve(async (req) => {
     // 3. Appeler le backend externe (Render)
     const BACKEND_URL = Deno.env.get('BACKEND_URL') || "https://voltflow-backend.onrender.com";
     
-    // Mapping des propriétés thermiques (correction des noms de colonnes DB)
+    // ✅ CORRECTION CRITIQUE: Mapping des propriétés thermiques (thermal_conductivity vs conductivity)
     const fortranConfig = {
       conductivity: sim.materials?.thermal_conductivity || 50.0,
       density: sim.materials?.density || 2700.0,
