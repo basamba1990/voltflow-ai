@@ -75,7 +75,7 @@ class SimulationResponse(BaseModel):
 # Classe pour exécuter le solveur Fortran
 class FortranSolver:
     def __init__(self, solver_path: str = "/app/backend/solver-engine/thermal_solver.exe"):
-        # Chemins possibles pour le solveur
+        # ✅ CORRECTION : Chemins possibles pour le solveur (Docker vs Local)
         possible_paths = [
             solver_path,
             os.path.join(os.getcwd(), "thermal_solver.exe"),
@@ -144,7 +144,7 @@ class FortranSolver:
                 logger.error(f"Erreur solveur: {result.stderr}")
                 raise RuntimeError(f"Solveur Fortran a échoué: {result.stderr}")
             
-            # Extraction JSON de la sortie standard
+            # ✅ CORRECTION : Extraction JSON robuste de la sortie standard
             output_data = self._parse_json_output(result.stdout)
             if not output_data:
                 logger.warning("Sortie JSON non trouvée, fallback par défaut")
@@ -236,7 +236,7 @@ async def simulate_fortran(request: SimulationRequest):
 
 @app.get("/api/results/{filename}")
 async def get_result_file(filename: str):
-    file_path = Path(forttran_solver.results_dir) / filename
+    file_path = Path(fortran_solver.results_dir) / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="Fichier non trouvé")
     return FileResponse(path=file_path, filename=filename)
