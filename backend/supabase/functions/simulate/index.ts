@@ -8,16 +8,10 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req) => {
-  // -------------------------------------------------------------------------
-  // OPTIONS -> CORS preflight
-  // -------------------------------------------------------------------------
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // -------------------------------------------------------------------------
-  // GET -> simple info
-  // -------------------------------------------------------------------------
   if (req.method === "GET") {
     return new Response(
       JSON.stringify({
@@ -28,9 +22,6 @@ Deno.serve(async (req) => {
     );
   }
 
-  // -------------------------------------------------------------------------
-  // POST -> process simulation
-  // -------------------------------------------------------------------------
   if (req.method !== "POST") {
     return new Response(
       JSON.stringify({ success: false, error: "Only POST supported" }),
@@ -42,9 +33,6 @@ Deno.serve(async (req) => {
   let userId: string | null = null;
 
   try {
-    // -------------------------------------------------------------------------
-    // Parse body safely
-    // -------------------------------------------------------------------------
     const bodyText = await req.text();
     if (!bodyText) throw new Error("Empty request body");
 
@@ -55,7 +43,6 @@ Deno.serve(async (req) => {
       throw new Error("Invalid JSON input");
     }
 
-    // Extraction robuste des IDs
     simId = body.simulation_id || body.record?.id;
     userId = body.user_id || body.record?.user_id;
 
@@ -65,17 +52,11 @@ Deno.serve(async (req) => {
 
     console.log(`🚀 Starting simulation ${simId} for user ${userId}`);
 
-    // -------------------------------------------------------------------------
-    // Supabase client (service role)
-    // -------------------------------------------------------------------------
     const supabase = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
 
-    // -------------------------------------------------------------------------
-    // Fetch simulation + material
-    // -------------------------------------------------------------------------
     const { data: sim, error: simError } = await supabase
       .from("simulations")
       .select("*, materials(*)")
@@ -84,7 +65,6 @@ Deno.serve(async (req) => {
 
     if (simError || !sim) throw new Error(`Simulation not found: ${simError?.message || 'Unknown error'}`);
 
-    // Autoriser le re-run si failed ou pending
     if (sim.status === "running" || sim.status === "completed") {
       console.log(`⚠️ Already processed (status: ${sim.status})`);
       return new Response(
@@ -93,21 +73,14 @@ Deno.serve(async (req) => {
       );
     }
 
-    // -------------------------------------------------------------------------
-    // Update simulation status -> running
-    // -------------------------------------------------------------------------
     await supabase.from("simulations").update({
       status: "running",
       progress: 20,
       started_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
-      error_message: null // Reset previous errors
+      error_message: null
     }).eq("id", simId);
 
-    // -------------------------------------------------------------------------
-    // Prepare backend config
-    // -------------------------------------------------------------------------
-    // Extraction des conditions aux limites depuis le JSON
     const bc = sim.boundary_conditions || {};
     
     const fortranConfig = {
@@ -127,9 +100,6 @@ Deno.serve(async (req) => {
 
     console.log(`📡 Calling backend: ${BACKEND_URL}/api/v1/simulate/fortran`);
 
-    // -------------------------------------------------------------------------
-    // Call backend
-    // -------------------------------------------------------------------------
     const response = await fetch(`${BACKEND_URL}/api/v1/simulate/fortran`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -148,13 +118,9 @@ Deno.serve(async (req) => {
     const result = await response.json();
     console.log("✅ Backend result received");
 
-    // -------------------------------------------------------------------------
-    // Upload VTK to Supabase Storage
-    // -------------------------------------------------------------------------
     let publicUrl: string | null = null;
 
     if (result.vtk_file_url) {
-      // Construction de l'URL absolue si nécessaire
       const fileUrl = result.vtk_file_url.startsWith("http")
         ? result.vtk_file_url
         : `${BACKEND_URL}${result.vtk_file_url}`;
@@ -182,7 +148,7 @@ Deno.serve(async (req) => {
     }
 
     // -------------------------------------------------------------------------
-    // Save results
+    // Save results - CORRIGÉ POUR LE FRONTEND
     // -------------------------------------------------------------------------
     const { error: insertError } = await supabase
       .from("simulation_results")
@@ -192,6 +158,7 @@ Deno.serve(async (req) => {
         max_temperature: result.temperature_stats?.max ?? 0,
         min_temperature: result.temperature_stats?.min ?? 0,
         average_temperature: result.temperature_stats?.avg ?? 0,
+        temperature_data: result.temperature_field || null, // Mapping pour le frontend
         methodology: "fortran_fem",
         result_files: { 
           source: "fortran_solver", 
@@ -232,7 +199,6 @@ Deno.serve(async (req) => {
   } catch (error: any) {
     console.error("💥 Function Error:", error.message);
 
-    // Tentative de mise à jour du statut en cas d'échec
     if (simId) {
       try {
         const supabase = createClient(
