@@ -59,7 +59,7 @@ Deno.serve(async (req) => {
     await supabase.from('simulations').update({ status: 'running', progress: 10 }).eq('id', simId);
 
     // 3. Appeler le backend externe (Render)
-    const BACKEND_URL = Deno.env.get('BACKEND_URL') || "https://voltflow-backend.onrender.com";
+    const BACKEND_URL = Deno.env.get('BACKEND_URL') || "https://voltflow-ai.onrender.com";
     
     // ✅ CORRECTION CRITIQUE: Mapping des propriétés thermiques (thermal_conductivity vs conductivity)
     const fortranConfig = {
