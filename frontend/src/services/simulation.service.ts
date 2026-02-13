@@ -288,13 +288,12 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       }
     };
 
-    // 4. METTRE À JOUR STATUT
-    await supabase.from('simulations').update({
-      status: 'running',
-      progress: 10,
-      started_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    }).eq('id', simulationId);
+    // 4. Mise à jour minimale avant l’Edge
+await supabase.from('simulations').update({
+  progress: 10,
+  started_at: new Date().toISOString(),
+  updated_at: new Date().toISOString()
+}).eq('id', simulationId);
 
     // 5. APPEL EDGE FUNCTION
     try {
