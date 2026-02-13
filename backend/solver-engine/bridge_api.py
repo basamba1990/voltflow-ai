@@ -84,6 +84,7 @@ class SimulationResponse(BaseModel):
     iterations: int
     final_residual: float
     temperature_stats: Dict[str, float]
+    temperature_field: Optional[Dict[str, Any]] = None
     output_file: str
     vtk_file_url: Optional[str] = None
     execution_time: float
@@ -265,6 +266,14 @@ async def simulate_fortran(request: SimulationRequest):
     try:
         results = fortran_solver.run_simulation(request.fortran_config)
         
+        # Extraction des données de champ pour le frontend
+        temp_stats = results.get("temperature_stats", {})
+        temp_field = {
+            "values": [temp_stats.get("avg", 0.0)] * results.get("mesh_points", 1),
+            "min": temp_stats.get("min", 0.0),
+            "max": temp_stats.get("max", 0.0)
+        }
+
         response = SimulationResponse(
             success=results.get("success", True),
             simulation_id=request.simulation_id,
@@ -272,7 +281,8 @@ async def simulate_fortran(request: SimulationRequest):
             mesh_points=results.get("mesh_points", 0),
             iterations=results.get("iterations", 0),
             final_residual=results.get("final_residual", 0.0),
-            temperature_stats=results.get("temperature_stats", {}),
+            temperature_stats=temp_stats,
+            temperature_field=temp_field,
             output_file=results.get("output_file", ""),
             vtk_file_url=results.get("vtk_file_url"),
             execution_time=results.get("execution_time", 0.0),
