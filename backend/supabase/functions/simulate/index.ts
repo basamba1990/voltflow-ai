@@ -8,37 +8,40 @@ const corsHeaders = {
 };
 
 Deno.serve(async (req) => {
+  // -------------------------------------------------------------------------
+  // OPTIONS -> CORS preflight
+  // -------------------------------------------------------------------------
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  // -------------------------------------------------------------------------
+  // GET -> simple info
+  // -------------------------------------------------------------------------
+  if (req.method === "GET") {
+    return new Response(
+      JSON.stringify({
+        success: true,
+        message: "Use POST with JSON { simulation_id, user_id } to run a simulation",
+      }),
+      { headers: corsHeaders }
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // POST -> process simulation
+  // -------------------------------------------------------------------------
+  if (req.method !== "POST") {
+    return new Response(
+      JSON.stringify({ success: false, error: "Only POST supported" }),
+      { status: 405, headers: corsHeaders }
+    );
+  }
+
+  let simId: string | null = null;
+  let userId: string | null = null;
+
   try {
-    // -------------------------------------------------------------------------
-    // OPTIONS -> CORS preflight
-    // -------------------------------------------------------------------------
-    if (req.method === "OPTIONS") {
-      return new Response("ok", { headers: corsHeaders });
-    }
-
-    // -------------------------------------------------------------------------
-    // GET -> simple info
-    // -------------------------------------------------------------------------
-    if (req.method === "GET") {
-      return new Response(
-        JSON.stringify({
-          success: true,
-          message: "Use POST with JSON { simulation_id, user_id } to run a simulation",
-        }),
-        { headers: corsHeaders }
-      );
-    }
-
-    // -------------------------------------------------------------------------
-    // POST -> process simulation
-    // -------------------------------------------------------------------------
-    if (req.method !== "POST") {
-      return new Response(
-        JSON.stringify({ success: false, error: "Only POST supported" }),
-        { status: 405, headers: corsHeaders }
-      );
-    }
-
     // -------------------------------------------------------------------------
     // Parse body safely
     // -------------------------------------------------------------------------
@@ -52,14 +55,15 @@ Deno.serve(async (req) => {
       throw new Error("Invalid JSON input");
     }
 
-    const simId = body.simulation_id || body.record?.id;
-    const userId = body.user_id || body.record?.user_id;
+    // Extraction robuste des IDs
+    simId = body.simulation_id || body.record?.id;
+    userId = body.user_id || body.record?.user_id;
 
     if (!simId || !userId) {
       throw new Error("Missing simulation_id or user_id");
     }
 
-    console.log(`🚀 Starting simulation ${simId}`);
+    console.log(`🚀 Starting simulation ${simId} for user ${userId}`);
 
     // -------------------------------------------------------------------------
     // Supabase client (service role)
@@ -78,12 +82,13 @@ Deno.serve(async (req) => {
       .eq("id", simId)
       .single();
 
-    if (simError || !sim) throw new Error("Simulation not found");
+    if (simError || !sim) throw new Error(`Simulation not found: ${simError?.message || 'Unknown error'}`);
 
+    // Autoriser le re-run si failed ou pending
     if (sim.status === "running" || sim.status === "completed") {
-      console.log("⚠️ Already processed");
+      console.log(`⚠️ Already processed (status: ${sim.status})`);
       return new Response(
-        JSON.stringify({ success: true, message: "Already processed" }),
+        JSON.stringify({ success: true, message: `Already processed with status: ${sim.status}` }),
         { headers: corsHeaders }
       );
     }
@@ -96,18 +101,22 @@ Deno.serve(async (req) => {
       progress: 20,
       started_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      error_message: null // Reset previous errors
     }).eq("id", simId);
 
     // -------------------------------------------------------------------------
     // Prepare backend config
     // -------------------------------------------------------------------------
+    // Extraction des conditions aux limites depuis le JSON
+    const bc = sim.boundary_conditions || {};
+    
     const fortranConfig = {
       conductivity: sim.materials?.thermal_conductivity ?? 50.0,
       density: sim.materials?.density ?? 2700.0,
       specific_heat: sim.materials?.specific_heat ?? 900.0,
-      initial_temp: sim.boundary_conditions?.initial_temp ?? 1000.0,
-      boundary_temp: sim.boundary_conditions?.ambient_temp ?? 25.0,
-      heat_flux: sim.boundary_conditions?.heat_flux ?? 1000.0,
+      initial_temp: bc.initial_temp ?? 1000.0,
+      boundary_temp: bc.ambient_temp ?? 25.0,
+      heat_flux: bc.heat_flux ?? 1000.0,
       nx: 100,
       ny: 1,
       nz: 1,
@@ -119,7 +128,7 @@ Deno.serve(async (req) => {
     console.log(`📡 Calling backend: ${BACKEND_URL}/api/v1/simulate/fortran`);
 
     // -------------------------------------------------------------------------
-    // Call backend (timeout safe, AbortController removed for large files)
+    // Call backend
     // -------------------------------------------------------------------------
     const response = await fetch(`${BACKEND_URL}/api/v1/simulate/fortran`, {
       method: "POST",
@@ -140,25 +149,31 @@ Deno.serve(async (req) => {
     console.log("✅ Backend result received");
 
     // -------------------------------------------------------------------------
-    // Upload VTK/STL/VTU to Supabase Storage
+    // Upload VTK to Supabase Storage
     // -------------------------------------------------------------------------
     let publicUrl: string | null = null;
 
     if (result.vtk_file_url) {
+      // Construction de l'URL absolue si nécessaire
       const fileUrl = result.vtk_file_url.startsWith("http")
         ? result.vtk_file_url
         : `${BACKEND_URL}${result.vtk_file_url}`;
 
+      console.log(`📥 Downloading result file: ${fileUrl}`);
       const vtkRes = await fetch(fileUrl);
-      if (!vtkRes.ok) throw new Error("Failed to download VTK file from backend");
+      if (!vtkRes.ok) throw new Error(`Failed to download result file from backend: ${vtkRes.status}`);
 
       const vtkBlob = await vtkRes.blob();
       const fileExt = fileUrl.split(".").pop() || "vtk";
       const storagePath = `${userId}/${simId}_result.${fileExt}`;
 
+      console.log(`📤 Uploading to storage: ${storagePath}`);
       const { error: uploadError } = await supabase.storage
         .from("simulation-files")
-        .upload(storagePath, vtkBlob, { contentType: "application/octet-stream", upsert: true });
+        .upload(storagePath, vtkBlob, { 
+          contentType: "application/octet-stream", 
+          upsert: true 
+        });
 
       if (uploadError) throw new Error(`Storage upload error: ${uploadError.message}`);
 
@@ -177,10 +192,13 @@ Deno.serve(async (req) => {
         max_temperature: result.temperature_stats?.max ?? 0,
         min_temperature: result.temperature_stats?.min ?? 0,
         average_temperature: result.temperature_stats?.avg ?? 0,
-        computation_time: result.computation_time ?? null,
         methodology: "fortran_fem",
-        vtk_file_url: publicUrl,
-        result_files: { source: "fortran_solver", external_backend: true },
+        result_files: { 
+          source: "fortran_solver", 
+          external_backend: true,
+          vtk_url: publicUrl,
+          execution_time: result.execution_time
+        },
         created_at: new Date().toISOString(),
       });
 
@@ -199,7 +217,7 @@ Deno.serve(async (req) => {
       })
       .eq("id", simId);
 
-    console.log("🎉 Simulation completed");
+    console.log("🎉 Simulation completed successfully");
 
     return new Response(
       JSON.stringify({
@@ -214,19 +232,21 @@ Deno.serve(async (req) => {
   } catch (error: any) {
     console.error("💥 Function Error:", error.message);
 
-    // Update simulation as failed
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-
+    // Tentative de mise à jour du statut en cas d'échec
     if (simId) {
-      await supabase.from("simulations").update({
-        status: "failed",
-        error_message: error.message.substring(0, 500),
-        completed_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }).eq("id", simId);
+      try {
+        const supabase = createClient(
+          Deno.env.get("SUPABASE_URL")!,
+          Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+        );
+        await supabase.from("simulations").update({
+          status: "failed",
+          error_message: error.message.substring(0, 500),
+          updated_at: new Date().toISOString(),
+        }).eq("id", simId);
+      } catch (updateErr) {
+        console.error("Failed to update simulation status to failed:", updateErr);
+      }
     }
 
     return new Response(
