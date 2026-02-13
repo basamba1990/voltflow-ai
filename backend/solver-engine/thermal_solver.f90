@@ -1,5 +1,5 @@
 ! ============================================================================
-! THERMAL SOLVER FORTRAN - Version 2.0
+! THERMAL SOLVER FORTRAN - Version 2.1
 ! Solveur thermique industriel 1D/2D/3D
 ! Compatible avec l'API Python et l'interface web
 ! ============================================================================
@@ -60,7 +60,7 @@ contains
 ! ----------------------------------------------------------------------
 subroutine initialize_solver()
     print *, "========================================"
-    print *, "THERMAL SOLVER ND - Version 2.0"
+    print *, "THERMAL SOLVER ND - Version 2.1"
     print *, "Solveur thermique industriel 1D/2D/3D"
     print *, "========================================"
 end subroutine initialize_solver
@@ -74,7 +74,7 @@ subroutine cleanup_solver(result)
 end subroutine cleanup_solver
 
 ! ----------------------------------------------------------------------
-! Résolution équation de la chaleur ND - CORRIGÉE
+! Résolution équation de la chaleur ND - CORRIGÉE (1D/2D/3D)
 ! ----------------------------------------------------------------------
 subroutine solve_heat_transfer_nd(cfg, result)
     type(SimulationConfig), intent(in) :: cfg
@@ -90,48 +90,60 @@ subroutine solve_heat_transfer_nd(cfg, result)
     
     ! Initialisation température
     result%T = cfg%initial_temp
+    Tnew = cfg%initial_temp
     
     ! Conditions aux limites Dirichlet
     result%T(1,:,:) = cfg%boundary_temp
     result%T(cfg%nx,:,:) = cfg%boundary_temp
+    Tnew(1,:,:) = cfg%boundary_temp
+    Tnew(cfg%nx,:,:) = cfg%boundary_temp
     
     if (cfg%ny > 1) then
         result%T(:,1,:) = cfg%boundary_temp
         result%T(:,cfg%ny,:) = cfg%boundary_temp
+        Tnew(:,1,:) = cfg%boundary_temp
+        Tnew(:,cfg%ny,:) = cfg%boundary_temp
     end if
     
     if (cfg%nz > 1) then
         result%T(:,:,1) = cfg%boundary_temp
         result%T(:,:,cfg%nz) = cfg%boundary_temp
+        Tnew(:,:,1) = cfg%boundary_temp
+        Tnew(:,:,cfg%nz) = cfg%boundary_temp
     end if
     
     ! Calcul diffusivité thermique
     alpha = cfg%conductivity / (cfg%density * cfg%specific_heat)
     
     ! Discrétisation spatiale
-    dx = 1.0_dp / real(cfg%nx-1, dp)
-    dy = 1.0_dp / real(max(1, cfg%ny-1), dp)
-    dz = 1.0_dp / real(max(1, cfg%nz-1), dp)
+    dx = 1._dp / real(max(1, cfg%nx-1), dp)
+    dy = 1._dp / real(max(1, cfg%ny-1), dp)
+    dz = 1._dp / real(max(1, cfg%nz-1), dp)
     
     ! Boucle de résolution
     do iter = 1, cfg%max_iterations
-        residual = 0.0_dp
+        residual = 0._dp
         
-        ! Schéma explicite ND - VERSION CORRIGÉE
-        do k = 2, max(2, cfg%nz-1)
-            do j = 2, max(2, cfg%ny-1)
-                do i = 2, cfg%nx-1
-                    ! Laplacien ND - Version corrigée sans opérateur ternaire
-                    laplacian = (result%T(i+1,j,k) - 2.0_dp*result%T(i,j,k) + result%T(i-1,j,k)) / (dx*dx)
+        ! Schéma explicite ND - VERSION CORRIGÉE POUR 1D/2D/3D
+        do k = 1, cfg%nz
+            do j = 1, cfg%ny
+                do i = 1, cfg%nx
+                    ! Sauter les bords (Dirichlet)
+                    if (i == 1 .or. i == cfg%nx) cycle
+                    if (cfg%ny > 1 .and. (j == 1 .or. j == cfg%ny)) cycle
+                    if (cfg%nz > 1 .and. (k == 1 .or. k == cfg%nz)) cycle
+
+                    ! Laplacien X (toujours présent car nx >= 2)
+                    laplacian = (result%T(i+1,j,k) - 2._dp*result%T(i,j,k) + result%T(i-1,j,k)) / (dx*dx)
                     
                     ! Terme en Y si ny > 1
                     if (cfg%ny > 1) then
-                        laplacian = laplacian + (result%T(i,j+1,k) - 2.0_dp*result%T(i,j,k) + result%T(i,j-1,k)) / (dy*dy)
+                        laplacian = laplacian + (result%T(i,j+1,k) - 2._dp*result%T(i,j,k) + result%T(i,j-1,k)) / (dy*dy)
                     end if
                     
                     ! Terme en Z si nz > 1
                     if (cfg%nz > 1) then
-                        laplacian = laplacian + (result%T(i,j,k+1) - 2.0_dp*result%T(i,j,k) + result%T(i,j,k-1)) / (dz*dz)
+                        laplacian = laplacian + (result%T(i,j,k+1) - 2._dp*result%T(i,j,k) + result%T(i,j,k-1)) / (dz*dz)
                     end if
                     
                     ! Mise à jour de la température
@@ -238,18 +250,18 @@ program thermal_solver
     logical :: file_exists
     
     ! Définition des paramètres par défaut
-    cfg%conductivity = 50.0_dp      ! Aluminium
-    cfg%density = 2700.0_dp
-    cfg%specific_heat = 900.0_dp
-    cfg%initial_temp = 1000.0_dp
-    cfg%boundary_temp = 25.0_dp
-    cfg%heat_flux = 1000.0_dp
+    cfg%conductivity = 50._dp      ! Aluminium
+    cfg%density = 2700._dp
+    cfg%specific_heat = 900._dp
+    cfg%initial_temp = 1000._dp
+    cfg%boundary_temp = 25._dp
+    cfg%heat_flux = 1000._dp
     cfg%nx = 100
     cfg%ny = 1
     cfg%nz = 1
     cfg%max_iterations = 5000
-    cfg%dt = 0.1_dp
-    cfg%tolerance = 1.0e-6_dp
+    cfg%dt = 0._dp
+    cfg%tolerance = 1.e-_dp
     cfg%geometry_type = '1d_rod'
     cfg%output_file = 'thermal_results.vtk'
     
@@ -287,7 +299,7 @@ program thermal_solver
     if (cfg%nx < 2) cfg%nx = 2
     if (cfg%ny < 1) cfg%ny = 1
     if (cfg%nz < 1) cfg%nz = 1
-    if (cfg%dt <= 0.0_dp) cfg%dt = 0.1_dp
+    if (cfg%dt <= 0._dp) cfg%dt = 0._dp
     
     print *, "Configuration:"
     print *, "  Matériau:        ", cfg%conductivity, " W/m·K"
