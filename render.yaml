@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: voltflow-backend
+    name: voltflow-ai
     runtime: docker
     plan: free
     region: frankfurt
