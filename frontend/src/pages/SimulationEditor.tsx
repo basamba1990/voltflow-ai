@@ -1,4 +1,4 @@
-// src/pages/SimulationEditor.tsx - VERSION CORRIGÉE ET OPTIMISÉE
+// src/pages/SimulationEditor.tsx - VERSION FINALE CORRIGÉE
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
@@ -14,13 +14,11 @@ import {
   ChevronLeft,
   FileUp,
   CheckCircle,
-  XCircle,
   Box,
   Settings,
   Grid3x3,
   Maximize2,
   Minimize2,
-  Thermometer,
   Square,
   BarChart3,
 } from 'lucide-react';
@@ -35,15 +33,12 @@ import { useAuth } from '@/contexts/AuthContext';
 import { SimulationStatus } from '@/components/SimulationStatus';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Slider } from '@/components/ui/slider';
-import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import VTKViewer from '@/components/Viewers/VTKViewer';
 import type { IndustrialField, IndustrialConfig, IndustrialLegend, UnitSystem } from '@/components/Viewers/VTKViewer';
@@ -73,7 +68,6 @@ export default function SimulationEditor() {
     },
     materialId: '',
     meshDensity: 'medium' as 'low' | 'medium' | 'high',
-    // Dimensions du maillage (nx, ny, nz)
     nx: 50,
     ny: 50,
     nz: 50,
@@ -135,11 +129,11 @@ export default function SimulationEditor() {
   const getMeshDimensions = useCallback((geometryType: string, density: string) => {
     const base = density === 'low' ? 30 : density === 'medium' ? 60 : 100;
     if (geometryType === '1d_rod') {
-      return { nx: base, ny: 5, nz: 5 };      // 1D allongé
+      return { nx: base, ny: 5, nz: 5 };
     } else if (geometryType === '2d_plate') {
-      return { nx: base, ny: base, nz: 5 };   // 2D épaisseur faible
+      return { nx: base, ny: base, nz: 5 };
     } else {
-      return { nx: base, ny: base, nz: base }; // 3D isotrope
+      return { nx: base, ny: base, nz: base };
     }
   }, []);
 
@@ -153,7 +147,7 @@ export default function SimulationEditor() {
     }
   };
 
-  // Initialisation des données
+  // Initialisation des données depuis la simulation existante
   useEffect(() => {
     if (id && simulation) {
       const bc = simulation.boundary_conditions as any;
@@ -186,6 +180,14 @@ export default function SimulationEditor() {
       }));
     }
   }, [id, simulation]);
+
+  // Mise à jour automatique de nx, ny, nz quand meshDensity ou geometryType change
+  useEffect(() => {
+    const geometryType = formData.geometryType === 'complex' ? '3d_complex' : 
+                         (formData.geometryConfig.file_name ? detectGeometryType(formData.geometryConfig.file_name) : '3d_complex');
+    const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
+    setFormData(prev => ({ ...prev, nx, ny, nz }));
+  }, [formData.meshDensity, formData.geometryType, formData.geometryConfig.file_name, getMeshDimensions]);
 
   // Préparation des données pour le viewer
   const prepareViewerData = useMemo(() => {
@@ -340,7 +342,6 @@ export default function SimulationEditor() {
 
           console.log('✅ Upload réussi:', result);
 
-          // Détection automatique et mise à jour des dimensions du maillage
           const geometryType = detectGeometryType(result.fileName);
           const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
 
@@ -369,9 +370,8 @@ export default function SimulationEditor() {
             </div>
           );
 
-          refresh(); // Rafraîchir les données de la simulation
+          refresh();
 
-          // Lancement automatique de la simulation
           console.log('🚀 Lancement automatique de la simulation...');
           try {
             await startSimulationHook(id);
@@ -407,7 +407,7 @@ export default function SimulationEditor() {
     }
   };
 
-  // Sauvegarde de la simulation avec nx, ny, nz
+  // Sauvegarde de la simulation avec la structure correcte (config)
   const handleSaveSimulation = useCallback(async () => {
     if (!user?.id) {
       toast.error('Vous devez être connecté pour sauvegarder une simulation.');
@@ -420,27 +420,25 @@ export default function SimulationEditor() {
         name: formData.name,
         description: formData.description,
         geometry_type: formData.geometryType,
-        nx: formData.nx,
-        ny: formData.ny,
-        nz: formData.nz,
-        geometry_config: {
-          file_url: formData.geometryConfig.file_url,
-          file_name: formData.geometryConfig.file_name,
-          file_size: formData.geometryConfig.file_size,
-          file_path: formData.geometryConfig.file_path,
-          dimensions: formData.geometryConfig.dimensions,
+        config: {
+          geometry_config: {
+            ...formData.geometryConfig,
+            nx: formData.nx,
+            ny: formData.ny,
+            nz: formData.nz,
+          },
+          boundary_conditions: {
+            initial_temp: parseFloat(formData.initialTemp),
+            ambient_temp: parseFloat(formData.ambientTemp),
+            cooling_type: formData.coolingType,
+            convection_coeff: parseFloat(formData.convectionCoeff),
+            fluid_type: formData.fluidType,
+            fluid_velocity: parseFloat(formData.fluidVelocity),
+          },
+          material_id: formData.materialId,
+          mesh_density: formData.meshDensity,
+          solver_type: formData.solverType,
         },
-        boundary_conditions: {
-          initial_temp: parseFloat(formData.initialTemp),
-          ambient_temp: parseFloat(formData.ambientTemp),
-          cooling_type: formData.coolingType,
-          convection_coeff: parseFloat(formData.convectionCoeff),
-          fluid_type: formData.fluidType,
-          fluid_velocity: parseFloat(formData.fluidVelocity),
-        },
-        material_id: formData.materialId,
-        mesh_density: formData.meshDensity,
-        solver_type: formData.solverType,
       };
 
       let savedSimulation;
@@ -478,7 +476,6 @@ export default function SimulationEditor() {
     try {
       await startSimulationHook(id);
       toast.success('Simulation lancée avec succès !');
-      // On force un rafraîchissement après quelques secondes pour récupérer les résultats
       setTimeout(() => refresh(), 2000);
     } catch (error: any) {
       console.error('Erreur lancement simulation:', error);
@@ -529,7 +526,6 @@ export default function SimulationEditor() {
     }
   }, [results, id]);
 
-  // Handlers génériques
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
@@ -549,14 +545,6 @@ export default function SimulationEditor() {
     }));
   }, []);
 
-  // Mise à jour automatique de nx, ny, nz quand meshDensity ou geometryType change
-  useEffect(() => {
-    const geometryType = formData.geometryType === 'complex' ? '3d_complex' : 
-                         (formData.geometryConfig.file_name ? detectGeometryType(formData.geometryConfig.file_name) : '3d_complex');
-    const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
-    setFormData(prev => ({ ...prev, nx, ny, nz }));
-  }, [formData.meshDensity, formData.geometryType, formData.geometryConfig.file_name, getMeshDimensions]);
-
   const currentMaterial = useMemo(() => {
     return materialsData.find(m => m.id === formData.materialId);
   }, [formData.materialId, materialsData]);
@@ -565,7 +553,6 @@ export default function SimulationEditor() {
     return formData.name.trim() !== '' && formData.materialId.trim() !== '';
   }, [formData.name, formData.materialId]);
 
-  // Rendu
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
       <header className="flex items-center justify-between p-4 border-b bg-card">
@@ -617,7 +604,7 @@ export default function SimulationEditor() {
           <CardContent className="flex-1 p-0 relative">
             {prepareViewerData ? (
               <VTKViewer
-                key={prepareViewerData.mesh.url} // Force le rechargement quand l'URL change
+                key={prepareViewerData.mesh.url}
                 data={prepareViewerData}
                 showGrid={viewState.showGrid}
                 showAxes={viewState.showAxes}
@@ -781,7 +768,6 @@ export default function SimulationEditor() {
               </Select>
             </div>
 
-            {/* Affichage des dimensions du maillage */}
             <div className="grid grid-cols-3 gap-2">
               <div className="grid gap-1">
                 <Label htmlFor="nx">NX</Label>
