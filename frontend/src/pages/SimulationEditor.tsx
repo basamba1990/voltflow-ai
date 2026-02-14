@@ -1,35 +1,28 @@
-// src/pages/SimulationEditor.tsx - VERSION COMPLÈTEMENT CORRIGÉE
+// src/pages/SimulationEditor.tsx - VERSION CORRIGÉE ET OPTIMISÉE
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
 
-// ✅ IMPORTS LUCIDE-REACT CORRIGÉS - VERSION VALIDE
-import { 
-  Save, 
-  Play, 
-  Download, 
-  Trash2, 
-  Thermometer, 
-  Loader2, 
+// Imports Lucide-React valides
+import {
+  Save,
+  Play,
+  Download,
+  Trash2,
+  Loader2,
   AlertCircle,
-  ChevronLeft, 
-  UploadCloud, 
-  Box, // Utilisé pour showAxes et geometry 3D
-  Settings, 
-  Eye, 
-  EyeOff, 
-  Grid3x3, // Note: minuscule 'x' 
-  Maximize2, 
-  Minimize2, 
-  Copy, 
-  FileUp, 
-  CheckCircle, 
+  ChevronLeft,
+  FileUp,
+  CheckCircle,
   XCircle,
-  FlaskConical, // Remplace TestTube
-  Shield, // Remplace ShieldAlert
-  Square, 
+  Box,
+  Settings,
+  Grid3x3,
+  Maximize2,
+  Minimize2,
+  Thermometer,
+  Square,
   BarChart3,
-  // ❌ Cube n'existe pas dans cette version - utilisation de Box à la place
 } from 'lucide-react';
 
 // Services et hooks
@@ -66,7 +59,7 @@ export default function SimulationEditor() {
   const { user } = useAuth();
   const materialsData = Array.isArray(materialsDataRaw) ? materialsDataRaw : [];
 
-  // État du formulaire
+  // État du formulaire enrichi avec nx, ny, nz
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -80,6 +73,10 @@ export default function SimulationEditor() {
     },
     materialId: '',
     meshDensity: 'medium' as 'low' | 'medium' | 'high',
+    // Dimensions du maillage (nx, ny, nz)
+    nx: 50,
+    ny: 50,
+    nz: 50,
     initialTemp: '1000',
     ambientTemp: '25',
     coolingType: 'natural_convection' as 'natural_convection' | 'forced_convection' | 'radiation',
@@ -111,20 +108,18 @@ export default function SimulationEditor() {
     element_id?: number;
   } | null>(null);
 
-  // Référence pour setTimeout
   const uploadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Cleanup des timeouts
+  // Nettoyage des timeouts
   useEffect(() => {
     return () => {
       if (uploadTimeoutRef.current) {
         clearTimeout(uploadTimeoutRef.current);
-        uploadTimeoutRef.current = null;
       }
     };
   }, []);
 
-  // ✅ FONCTIONS DE DÉTECTION CORRIGÉES
+  // Détection du type de géométrie depuis le nom du fichier
   const detectGeometryType = (fileName: string): '1d_rod' | '2d_plate' | '3d_complex' => {
     const lowerName = fileName.toLowerCase();
     if (lowerName.includes('rod') || lowerName.includes('1d') || lowerName.includes('bar')) {
@@ -136,19 +131,24 @@ export default function SimulationEditor() {
     }
   };
 
-  const detectRecommendedSolver = (geometryType: string, fileExt: string): string => {
-    if (geometryType === '1d_rod') return 'fem_fortran';
-    if (geometryType === '2d_plate') return 'fem_fortran';
-    if (fileExt === 'stl' || fileExt === 'step' || fileExt === 'stp') return 'openfoam';
-    return 'fem_fortran';
-  };
+  // Ajustement automatique de nx, ny, nz en fonction du type et de la densité
+  const getMeshDimensions = useCallback((geometryType: string, density: string) => {
+    const base = density === 'low' ? 30 : density === 'medium' ? 60 : 100;
+    if (geometryType === '1d_rod') {
+      return { nx: base, ny: 5, nz: 5 };      // 1D allongé
+    } else if (geometryType === '2d_plate') {
+      return { nx: base, ny: base, nz: 5 };   // 2D épaisseur faible
+    } else {
+      return { nx: base, ny: base, nz: base }; // 3D isotrope
+    }
+  }, []);
 
-  // ✅ CORRECTION : Utilisation de Box pour 3D au lieu de Cube
+  // Icône selon le type
   const getGeometryIcon = (geometryType: string) => {
     switch (geometryType) {
       case '1d_rod': return BarChart3;
       case '2d_plate': return Square;
-      case '3d_complex': return Box; // ❌ Cube n'existe pas, utilisation de Box
+      case '3d_complex': return Box;
       default: return Box;
     }
   };
@@ -159,27 +159,31 @@ export default function SimulationEditor() {
       const bc = simulation.boundary_conditions as any;
       const gc = simulation.geometry_config as any;
 
-      setFormData({  
-        name: simulation.name || '',  
-        description: simulation.description || '',  
-        geometryType: simulation.geometry_type || 'complex',  
-        geometryConfig: {  
-          file_url: gc?.file_url || '',  
-          file_name: gc?.file_name || '',  
-          file_size: gc?.file_size || 0,  
-          file_path: gc?.file_path || '',  
-          dimensions: gc?.dimensions || { width: 100, height: 100, depth: 100 }  
-        },  
-        materialId: simulation.material_id || '',  
-        meshDensity: simulation.mesh_density || 'medium',  
-        initialTemp: bc?.initial_temp?.toString() || '1000',  
-        ambientTemp: bc?.ambient_temp?.toString() || '25',  
-        coolingType: bc?.cooling_type || 'natural_convection',  
-        convectionCoeff: bc?.convection_coeff?.toString() || '10',  
-        fluidType: bc?.fluid_type || 'air',  
-        fluidVelocity: bc?.fluid_velocity?.toString() || '1',  
-        solverType: simulation.solver_type || 'fem_fortran',  
-      });  
+      setFormData(prev => ({
+        ...prev,
+        name: simulation.name || '',
+        description: simulation.description || '',
+        geometryType: simulation.geometry_type || 'complex',
+        geometryConfig: {
+          file_url: gc?.file_url || '',
+          file_name: gc?.file_name || '',
+          file_size: gc?.file_size || 0,
+          file_path: gc?.file_path || '',
+          dimensions: gc?.dimensions || { width: 100, height: 100, depth: 100 }
+        },
+        materialId: simulation.material_id || '',
+        meshDensity: simulation.mesh_density || 'medium',
+        nx: simulation.nx || 50,
+        ny: simulation.ny || 50,
+        nz: simulation.nz || 50,
+        initialTemp: bc?.initial_temp?.toString() || '1000',
+        ambientTemp: bc?.ambient_temp?.toString() || '25',
+        coolingType: bc?.cooling_type || 'natural_convection',
+        convectionCoeff: bc?.convection_coeff?.toString() || '10',
+        fluidType: bc?.fluid_type || 'air',
+        fluidVelocity: bc?.fluid_velocity?.toString() || '1',
+        solverType: simulation.solver_type || 'fem_fortran',
+      }));
     }
   }, [id, simulation]);
 
@@ -187,175 +191,163 @@ export default function SimulationEditor() {
   const prepareViewerData = useMemo(() => {
     if (!results) return null;
 
-    const fields: IndustrialField[] = [];  
-    if (results.temperature_field && results.temperature_field.values) {  
-      const tempValues = results.temperature_field.values;  
-      const tempArray = Array.isArray(tempValues) ? tempValues : Object.values(tempValues);  
-        
-      fields.push({  
-        id: 'temperature',  
-        name: 'Temperature',  
-        type: 'temperature',  
-        values: new Float32Array(tempArray),  
-        units: '°C',  
-        min: Math.min(...tempArray),  
-        max: Math.max(...tempArray),  
-        timestamp: simulation?.created_at || new Date().toISOString(),  
-        material: formData.materialId ?   
-          materialsData.find(m => m.id === formData.materialId)?.name.toLowerCase() as any : 'steel',  
-        thermal_conductivity: materialsData.find(m => m.id === formData.materialId)?.conductivity || 50,  
-      });  
-    }  
+    const fields: IndustrialField[] = [];
+    if (results.temperature_field && results.temperature_field.values) {
+      const tempValues = results.temperature_field.values;
+      const tempArray = Array.isArray(tempValues) ? tempValues : Object.values(tempValues);
 
-    const config: Partial<IndustrialConfig> = {  
-      max_memory_mb: 2048,  
-      target_fps: 60,  
-      lod_enabled: true,  
-      default_view: 'isometric',  
-      lighting: 'engineering',  
-      background: 'dark',  
-      unit_system: 'si' as UnitSystem,  
-      precision: 2,  
-      annotations: true,  
-    };  
+      fields.push({
+        id: 'temperature',
+        name: 'Temperature',
+        type: 'temperature',
+        values: new Float32Array(tempArray),
+        units: '°C',
+        min: Math.min(...tempArray),
+        max: Math.max(...tempArray),
+        timestamp: simulation?.created_at || new Date().toISOString(),
+        material: formData.materialId ?
+          materialsData.find(m => m.id === formData.materialId)?.name.toLowerCase() as any : 'steel',
+        thermal_conductivity: materialsData.find(m => m.id === formData.materialId)?.conductivity || 50,
+      });
+    }
 
-    const legend: IndustrialLegend = {  
-      type: 'scientific',  
-      min: fields[0]?.min || 0,  
-      max: fields[0]?.max || 100,  
-      num_ticks: 7,  
-      format: '0.0',  
-      units: '°C',  
-      color_map: viewState.colorMap,  
-      show_gradient: true,  
-      show_values: true,  
-      show_units: true,  
-      safety_thresholds: {  
-        critical: 800,  
-        warning: 500,  
-        safe: 200,  
-      },  
-    };  
+    const config: Partial<IndustrialConfig> = {
+      max_memory_mb: 2048,
+      target_fps: 60,
+      lod_enabled: true,
+      default_view: 'isometric',
+      lighting: 'engineering',
+      background: 'dark',
+      unit_system: 'si' as UnitSystem,
+      precision: 2,
+      annotations: true,
+    };
 
-    return {  
-      mesh: {  
-        url: results.vtk_file_url || results.geometry_url || '',  
-        type: results.vtk_file_url?.endsWith('.vtp') ? 'vtp' :  
-              results.vtk_file_url?.endsWith('.stl') ? 'stl' : 'vtp',  
-        metadata: results.mesh_metadata,  
-      },  
-      fields,  
-      config,  
-      legend,  
-      simulation: simulation ? {  
-        engine: simulation.solver_type || 'fem_fortran',  
-        case_name: simulation.name,  
-        version: '1.0',  
-        timestamp: simulation.created_at || new Date().toISOString(),  
-      } : undefined,  
+    const legend: IndustrialLegend = {
+      type: 'scientific',
+      min: fields[0]?.min || 0,
+      max: fields[0]?.max || 100,
+      num_ticks: 7,
+      format: '0.0',
+      units: '°C',
+      color_map: viewState.colorMap,
+      show_gradient: true,
+      show_values: true,
+      show_units: true,
+      safety_thresholds: {
+        critical: 800,
+        warning: 500,
+        safe: 200,
+      },
+    };
+
+    return {
+      mesh: {
+        url: results.vtk_file_url || results.geometry_url || '',
+        type: results.vtk_file_url?.endsWith('.vtp') ? 'vtp' :
+              results.vtk_file_url?.endsWith('.stl') ? 'stl' : 'vtp',
+        metadata: results.mesh_metadata,
+      },
+      fields,
+      config,
+      legend,
+      simulation: simulation ? {
+        engine: simulation.solver_type || 'fem_fortran',
+        case_name: simulation.name,
+        version: '1.0',
+        timestamp: simulation.created_at || new Date().toISOString(),
+      } : undefined,
     };
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
-  // ✅ GESTION DES FICHIERS - VERSION CORRIGÉE
+  // Gestion de l'upload de fichier
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    // Reset complet avant nouvel upload
     setUploadingFile(true);
     setUploadError(null);
     setUploadProgress(0);
     setUploadPhase('uploading');
 
-    if (uploadTimeoutRef.current) {  
-      clearTimeout(uploadTimeoutRef.current);  
-      uploadTimeoutRef.current = null;  
-    }  
+    if (uploadTimeoutRef.current) {
+      clearTimeout(uploadTimeoutRef.current);
+      uploadTimeoutRef.current = null;
+    }
 
-    const file = e.target.files?.[0];  
-    if (!file) {  
-      setUploadingFile(false);  
-      setUploadPhase('idle');  
-      toast.error('Aucun fichier sélectionné');  
-      return;  
-    }  
+    const file = e.target.files?.[0];
+    if (!file) {
+      setUploadingFile(false);
+      setUploadPhase('idle');
+      toast.error('Aucun fichier sélectionné');
+      return;
+    }
 
-    if (!id) {  
-      setUploadingFile(false);  
-      setUploadPhase('idle');  
-      toast.error('Impossible d\'uploader: Simulation non sauvegardée. Veuillez d\'abord créer/sauvegarder la simulation.');  
-      return;  
-    }  
+    if (!id) {
+      setUploadingFile(false);
+      setUploadPhase('idle');
+      toast.error('Impossible d\'uploader: Simulation non sauvegardée. Veuillez d\'abord créer/sauvegarder la simulation.');
+      return;
+    }
 
-    // Validation extension  
-    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk', '.iges', '.igs', '.vtu'];  
-    const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));  
-      
-    if (!validExtensions.includes(fileExt)) {  
-      setUploadingFile(false);  
-      setUploadPhase('idle');  
-      toast.error(`Extension non supportée: ${fileExt}. Formats: ${validExtensions.join(', ')}`);  
-      return;  
-    }  
+    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk', '.iges', '.igs', '.vtu'];
+    const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
 
-    // Validation taille  
-    const maxSize = 50 * 1024 * 1024;  
-    if (file.size > maxSize) {  
-      setUploadingFile(false);  
-      setUploadPhase('idle');  
-      toast.error(`Fichier trop volumineux (${(file.size / 1024 / 1024).toFixed(1)}MB). Max: 50MB`);  
-      return;  
-    }  
+    if (!validExtensions.includes(fileExt)) {
+      setUploadingFile(false);
+      setUploadPhase('idle');
+      toast.error(`Extension non supportée: ${fileExt}. Formats: ${validExtensions.join(', ')}`);
+      return;
+    }
 
-    try {  
-      console.log('🚀 Début upload:', file.name);  
-        
-      // Timeout absolu de 45 secondes  
-      const timeoutPromise = new Promise<never>((_, reject) => {  
-        uploadTimeoutRef.current = setTimeout(() => {  
-          reject(new Error('Upload timeout: 45 secondes dépassées'));  
-        }, 45000);  
-      });  
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      setUploadingFile(false);
+      setUploadPhase('idle');
+      toast.error(`Fichier trop volumineux (${(file.size / 1024 / 1024).toFixed(1)}MB). Max: 50MB`);
+      return;
+    }
 
-      // Simulation de progression  
-      const progressInterval = setInterval(() => {  
-        setUploadProgress(prev => {  
-          if (prev < 80) {  
-            return Math.min(prev + 5, 80);  
-          } else {  
-            if (uploadPhase !== 'finalizing') {  
-              setUploadPhase('finalizing');  
-            }  
-            return Math.min(prev + 2, 95);  
-          }  
-        });  
-      }, 500);  
+    try {
+      console.log('🚀 Début upload:', file.name);
 
-      // Upload via le service corrigé  
-      const uploadPromise = (async () => {  
-        try {  
-          console.log('🔄 Tentative upload via SimulationService...');  
-          const result = await SimulationService.uploadGeometry({  
-            file,  
-            simulationId: id // Passer l'ID de la simulation  
-          });  
-            
-          clearInterval(progressInterval);  
-          setUploadPhase('idle');  
-          setUploadProgress(100);  
-            
-          console.log('✅ Upload réussi:', result);  
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        uploadTimeoutRef.current = setTimeout(() => {
+          reject(new Error('Upload timeout: 45 secondes dépassées'));
+        }, 45000);
+      });
 
-          // ✅ DÉTECTION AUTOMATIQUE DU TYPE DE GÉOMÉTRIE
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => {
+          if (prev < 80) {
+            return Math.min(prev + 5, 80);
+          } else {
+            if (uploadPhase !== 'finalizing') {
+              setUploadPhase('finalizing');
+            }
+            return Math.min(prev + 2, 95);
+          }
+        });
+      }, 500);
+
+      const uploadPromise = (async () => {
+        try {
+          const result = await SimulationService.uploadGeometry({
+            file,
+            simulationId: id
+          });
+
+          clearInterval(progressInterval);
+          setUploadPhase('idle');
+          setUploadProgress(100);
+
+          console.log('✅ Upload réussi:', result);
+
+          // Détection automatique et mise à jour des dimensions du maillage
           const geometryType = detectGeometryType(result.fileName);
-          const fileExtension = result.fileName.toLowerCase().split('.').pop() || '';
-          const recommendedSolver = detectRecommendedSolver(geometryType, fileExtension);
-          const GeometryIcon = getGeometryIcon(geometryType);
+          const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
 
-          // Mise à jour du formulaire AVEC DÉTECTION AUTOMATIQUE
           setFormData(prev => ({
             ...prev,
             geometryType: geometryType === '1d_rod' ? 'simple' : 'complex',
-            solverType: recommendedSolver as any,
-            meshDensity: geometryType === '1d_rod' ? 'high' : 
-                        geometryType === '2d_plate' ? 'medium' : 'medium',
+            nx, ny, nz,
             geometryConfig: {
               ...prev.geometryConfig,
               file_url: result.fileUrl,
@@ -365,24 +357,21 @@ export default function SimulationEditor() {
             }
           }));
 
-          // Afficher une notification détaillée
           toast.success(
             <div className="flex items-start space-x-2">
-              <GeometryIcon className="h-5 w-5 mt-0.5 text-blue-500" />
+              {React.createElement(getGeometryIcon(geometryType), { className: "h-5 w-5 mt-0.5 text-blue-500" })}
               <div>
                 <p className="font-medium">Géométrie uploadée avec succès</p>
                 <p className="text-sm text-gray-600">
                   Type détecté: <Badge variant="outline" className="ml-1">{geometryType}</Badge>
-                  <br />
-                  Solveur recommandé: <Badge variant="secondary" className="ml-1">{recommendedSolver}</Badge>
                 </p>
               </div>
             </div>
           );
-          
-          refresh(); // Rafraîchir les données de la simulation  
-          
-          // ✅ DÉCLENCHEMENT AUTOMATIQUE DE LA SIMULATION APRÈS UPLOAD
+
+          refresh(); // Rafraîchir les données de la simulation
+
+          // Lancement automatique de la simulation
           console.log('🚀 Lancement automatique de la simulation...');
           try {
             await startSimulationHook(id);
@@ -392,76 +381,83 @@ export default function SimulationEditor() {
             toast.error(`Upload réussi mais échec du lancement: ${simError.message}`);
           }
 
-          return result;  
-        } catch (innerError: any) {  
-          clearInterval(progressInterval);  
-          setUploadPhase('idle');  
-          setUploadProgress(0);  
-          console.error('❌ Erreur interne upload:', innerError);  
-          throw innerError; // Propager l'erreur pour le catch externe  
-        }  
-      })();  
+          return result;
+        } catch (innerError: any) {
+          clearInterval(progressInterval);
+          setUploadPhase('idle');
+          setUploadProgress(0);
+          throw innerError;
+        }
+      })();
 
-      await Promise.race([uploadPromise, timeoutPromise]);  
+      await Promise.race([uploadPromise, timeoutPromise]);
 
-    } catch (error: any) {  
-      if (uploadTimeoutRef.current) {  
-        clearTimeout(uploadTimeoutRef.current);  
-        uploadTimeoutRef.current = null;  
-      }  
-      setUploadingFile(false);  
-      setUploadPhase('idle');  
-      setUploadProgress(0);  
-      const errorMessage = error.message || 'Une erreur inconnue est survenue lors de l\'upload.';  
-      setUploadError(errorMessage);  
-      toast.error(`Échec de l'upload: ${errorMessage}`);  
-      console.error('❌ Erreur handleFileUpload:', error);  
+    } catch (error: any) {
+      if (uploadTimeoutRef.current) {
+        clearTimeout(uploadTimeoutRef.current);
+        uploadTimeoutRef.current = null;
+      }
+      setUploadingFile(false);
+      setUploadPhase('idle');
+      setUploadProgress(0);
+      const errorMessage = error.message || 'Une erreur inconnue est survenue lors de l\'upload.';
+      setUploadError(errorMessage);
+      toast.error(`Échec de l'upload: ${errorMessage}`);
+      console.error('❌ Erreur handleFileUpload:', error);
     }
   };
 
+  // Sauvegarde de la simulation avec nx, ny, nz
   const handleSaveSimulation = useCallback(async () => {
     if (!user?.id) {
       toast.error('Vous devez être connecté pour sauvegarder une simulation.');
       return;
     }
 
-    setIsSaving(true);  
-    try {  
-      const simulationData = {  
-        name: formData.name,  
-        description: formData.description,  
-        geometryType: formData.geometryType,  
-        config: {  
-          geometry_config: formData.geometryConfig,  
-          boundary_conditions: {  
-            initial_temp: parseFloat(formData.initialTemp),  
-            ambient_temp: parseFloat(formData.ambientTemp),  
-            cooling_type: formData.coolingType,  
-            convection_coeff: parseFloat(formData.convectionCoeff),  
-            fluid_type: formData.fluidType,  
-            fluid_velocity: parseFloat(formData.fluidVelocity),  
-          },  
-          material_id: formData.materialId,  
-          mesh_density: formData.meshDensity,  
-          solver_type: formData.solverType,  
-        },  
-      };  
+    setIsSaving(true);
+    try {
+      const simulationData = {
+        name: formData.name,
+        description: formData.description,
+        geometry_type: formData.geometryType,
+        nx: formData.nx,
+        ny: formData.ny,
+        nz: formData.nz,
+        geometry_config: {
+          file_url: formData.geometryConfig.file_url,
+          file_name: formData.geometryConfig.file_name,
+          file_size: formData.geometryConfig.file_size,
+          file_path: formData.geometryConfig.file_path,
+          dimensions: formData.geometryConfig.dimensions,
+        },
+        boundary_conditions: {
+          initial_temp: parseFloat(formData.initialTemp),
+          ambient_temp: parseFloat(formData.ambientTemp),
+          cooling_type: formData.coolingType,
+          convection_coeff: parseFloat(formData.convectionCoeff),
+          fluid_type: formData.fluidType,
+          fluid_velocity: parseFloat(formData.fluidVelocity),
+        },
+        material_id: formData.materialId,
+        mesh_density: formData.meshDensity,
+        solver_type: formData.solverType,
+      };
 
-      let savedSimulation;  
-      if (id) {  
-        savedSimulation = await SimulationService.updateSimulation(id, simulationData);  
-        toast.success('Simulation mise à jour avec succès !');  
-      } else {  
-        savedSimulation = await SimulationService.createSimulation(simulationData);  
-        toast.success('Simulation créée avec succès !');  
-        setLocation(`/simulation/${savedSimulation.id}`);  
-      }  
-      refresh();  
-    } catch (error: any) {  
-      console.error('Erreur sauvegarde simulation:', error);  
-      toast.error(`Échec de la sauvegarde: ${error.message}`);  
-    } finally {  
-      setIsSaving(false);  
+      let savedSimulation;
+      if (id) {
+        savedSimulation = await SimulationService.updateSimulation(id, simulationData);
+        toast.success('Simulation mise à jour avec succès !');
+      } else {
+        savedSimulation = await SimulationService.createSimulation(simulationData);
+        toast.success('Simulation créée avec succès !');
+        setLocation(`/simulation/${savedSimulation.id}`);
+      }
+      refresh();
+    } catch (error: any) {
+      console.error('Erreur sauvegarde simulation:', error);
+      toast.error(`Échec de la sauvegarde: ${error.message}`);
+    } finally {
+      setIsSaving(false);
     }
   }, [formData, id, user, setLocation, refresh]);
 
@@ -479,26 +475,28 @@ export default function SimulationEditor() {
       return;
     }
 
-    try {  
-      await startSimulationHook(id);  
-      toast.success('Simulation lancée avec succès !');  
-    } catch (error: any) {  
-      console.error('Erreur lancement simulation:', error);  
-      toast.error(`Échec du lancement: ${error.message}`);  
+    try {
+      await startSimulationHook(id);
+      toast.success('Simulation lancée avec succès !');
+      // On force un rafraîchissement après quelques secondes pour récupérer les résultats
+      setTimeout(() => refresh(), 2000);
+    } catch (error: any) {
+      console.error('Erreur lancement simulation:', error);
+      toast.error(`Échec du lancement: ${error.message}`);
     }
-  }, [id, user, isRunning, startSimulationHook]);
+  }, [id, user, isRunning, startSimulationHook, refresh]);
 
   const handleDeleteSimulation = useCallback(async () => {
     if (!id) return;
     if (!confirm('Êtes-vous sûr de vouloir supprimer cette simulation ?')) return;
 
-    try {  
-      await SimulationService.deleteSimulation(id);  
-      toast.success('Simulation supprimée avec succès !');  
-      setLocation('/dashboard');  
-    } catch (error: any) {  
-      console.error('Erreur suppression simulation:', error);  
-      toast.error(`Échec de la suppression: ${error.message}`);  
+    try {
+      await SimulationService.deleteSimulation(id);
+      toast.success('Simulation supprimée avec succès !');
+      setLocation('/dashboard');
+    } catch (error: any) {
+      console.error('Erreur suppression simulation:', error);
+      toast.error(`Échec de la suppression: ${error.message}`);
     }
   }, [id, setLocation]);
 
@@ -531,19 +529,14 @@ export default function SimulationEditor() {
     }
   }, [results, id]);
 
+  // Handlers génériques
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value,
-    }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   }, []);
 
   const handleSelectChange = useCallback((name: string, value: string) => {
-    setFormData(prev => ({
-      ...prev,
-      [name]: value,
-    }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   }, []);
 
   const handleGeometryDimensionChange = useCallback((dim: string, value: string) => {
@@ -551,13 +544,18 @@ export default function SimulationEditor() {
       ...prev,
       geometryConfig: {
         ...prev.geometryConfig,
-        dimensions: {
-          ...prev.geometryConfig.dimensions,
-          [dim]: parseFloat(value) || 0,
-        },
-      },
+        dimensions: { ...prev.geometryConfig.dimensions, [dim]: parseFloat(value) || 0 }
+      }
     }));
   }, []);
+
+  // Mise à jour automatique de nx, ny, nz quand meshDensity ou geometryType change
+  useEffect(() => {
+    const geometryType = formData.geometryType === 'complex' ? '3d_complex' : 
+                         (formData.geometryConfig.file_name ? detectGeometryType(formData.geometryConfig.file_name) : '3d_complex');
+    const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
+    setFormData(prev => ({ ...prev, nx, ny, nz }));
+  }, [formData.meshDensity, formData.geometryType, formData.geometryConfig.file_name, getMeshDimensions]);
 
   const currentMaterial = useMemo(() => {
     return materialsData.find(m => m.id === formData.materialId);
@@ -567,7 +565,7 @@ export default function SimulationEditor() {
     return formData.name.trim() !== '' && formData.materialId.trim() !== '';
   }, [formData.name, formData.materialId]);
 
-  // Rendu de l'interface
+  // Rendu
   return (
     <div className="flex flex-col h-screen bg-background text-foreground">
       <header className="flex items-center justify-between p-4 border-b bg-card">
@@ -600,233 +598,260 @@ export default function SimulationEditor() {
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden">  
-        <Card className="lg:col-span-2 flex flex-col">  
-          <CardHeader className="flex flex-row items-center justify-between">  
-            <CardTitle>Visualisation 3D</CardTitle>  
-            <div className="flex items-center space-x-2">  
-              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showGrid: !prev.showGrid }))} title="Afficher/Masquer Grille">  
-                {viewState.showGrid ? <Grid3x3 className="h-4 w-4" /> : <Grid3x3 className="h-4 w-4 text-muted-foreground" />}  
-              </Button>  
-              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showAxes: !prev.showAxes }))} title="Afficher/Masquer Axes">  
-                {viewState.showAxes ? <Box className="h-4 w-4" /> : <Box className="h-4 w-4 text-muted-foreground" />}  
-              </Button>  
-              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, isFullscreen: !prev.isFullscreen }))} title="Plein écran">  
-                {viewState.isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}  
-              </Button>  
-            </div>  
-          </CardHeader>  
-          <CardContent className="flex-1 p-0 relative">  
-            {prepareViewerData ? (  
-              <VTKViewer  
-                data={prepareViewerData}  
-                showGrid={viewState.showGrid}  
-                showAxes={viewState.showAxes}  
-                viewMode={viewState.viewMode}  
-                colorMap={viewState.colorMap}  
-                opacity={viewState.opacity}  
-                onPointSelect={setSelectedPoint}  
-              />  
-            ) : (  
-              <div className="flex items-center justify-center h-full text-muted-foreground">  
-                {simulation?.status === 'pending' && <p>En attente de lancement de la simulation...</p>}  
-                {simulation?.status === 'running' && <p>Simulation en cours de calcul...</p>}  
-                {simulation?.status === 'failed' && <p>La simulation a échoué. Veuillez vérifier les logs.</p>}  
-                {simulation?.status === 'completed' && !results && <p>Simulation terminée, mais aucun résultat disponible.</p>}  
-                {!simulation && <p>Configurez et lancez une simulation pour visualiser les résultats.</p>}  
-              </div>  
-            )}  
-            {selectedPoint && (  
-              <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm p-3 rounded-lg shadow-lg text-sm">  
-                <h4 className="font-semibold mb-1">Détails du point</h4>  
-                <p>Position: ({selectedPoint.position.map(c => c.toFixed(2)).join(', ')})</p>  
-                {Object.entries(selectedPoint.field_values).map(([key, value]) => (  
-                  <p key={key}>{key}: {value.toFixed(2)} {prepareViewerData?.fields.find(f => f.id === key)?.units || ''}</p>  
-                ))}  
-              </div>  
-            )}  
-          </CardContent>  
-        </Card>  
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden">
+        <Card className="lg:col-span-2 flex flex-col">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Visualisation 3D</CardTitle>
+            <div className="flex items-center space-x-2">
+              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showGrid: !prev.showGrid }))} title="Afficher/Masquer Grille">
+                {viewState.showGrid ? <Grid3x3 className="h-4 w-4" /> : <Grid3x3 className="h-4 w-4 text-muted-foreground" />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showAxes: !prev.showAxes }))} title="Afficher/Masquer Axes">
+                {viewState.showAxes ? <Box className="h-4 w-4" /> : <Box className="h-4 w-4 text-muted-foreground" />}
+              </Button>
+              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, isFullscreen: !prev.isFullscreen }))} title="Plein écran">
+                {viewState.isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="flex-1 p-0 relative">
+            {prepareViewerData ? (
+              <VTKViewer
+                key={prepareViewerData.mesh.url} // Force le rechargement quand l'URL change
+                data={prepareViewerData}
+                showGrid={viewState.showGrid}
+                showAxes={viewState.showAxes}
+                viewMode={viewState.viewMode}
+                colorMap={viewState.colorMap}
+                opacity={viewState.opacity}
+                onPointSelect={setSelectedPoint}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                {simulation?.status === 'pending' && <p>En attente de lancement de la simulation...</p>}
+                {simulation?.status === 'running' && (
+                  <div className="text-center">
+                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
+                    <p>Simulation en cours de calcul... {progress ? `${progress}%` : ''}</p>
+                  </div>
+                )}
+                {simulation?.status === 'failed' && <p>La simulation a échoué. Veuillez vérifier les logs.</p>}
+                {simulation?.status === 'completed' && !results && (
+                  <div className="text-center">
+                    <p>Simulation terminée, chargement des résultats...</p>
+                    <Loader2 className="h-6 w-6 animate-spin mx-auto mt-2" />
+                  </div>
+                )}
+                {!simulation && <p>Configurez et lancez une simulation pour visualiser les résultats.</p>}
+              </div>
+            )}
+            {selectedPoint && (
+              <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm p-3 rounded-lg shadow-lg text-sm">
+                <h4 className="font-semibold mb-1">Détails du point</h4>
+                <p>Position: ({selectedPoint.position.map(c => c.toFixed(2)).join(', ')})</p>
+                {Object.entries(selectedPoint.field_values).map(([key, value]) => (
+                  <p key={key}>{key}: {value.toFixed(2)} {prepareViewerData?.fields.find(f => f.id === key)?.units || ''}</p>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-        <Card className="flex flex-col">  
-          <CardHeader>  
+        <Card className="flex flex-col">
+          <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Settings className="h-5 w-5" />
               Configuration de la Simulation
-            </CardTitle>  
-          </CardHeader>  
-          <CardContent className="flex-1 overflow-y-auto space-y-6">  
-            <div className="grid gap-2">  
-              <Label htmlFor="name">Nom de la simulation</Label>  
-              <Input id="name" name="name" value={formData.name} onChange={handleInputChange} placeholder="Ma simulation" />  
-            </div>  
-            <div className="grid gap-2">  
-              <Label htmlFor="description">Description</Label>  
-              <Textarea id="description" name="description" value={formData.description} onChange={handleInputChange} placeholder="Description de la simulation..." rows={3} />  
-            </div>  
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 overflow-y-auto space-y-6">
+            <div className="grid gap-2">
+              <Label htmlFor="name">Nom de la simulation</Label>
+              <Input id="name" name="name" value={formData.name} onChange={handleInputChange} placeholder="Ma simulation" />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="description">Description</Label>
+              <Textarea id="description" name="description" value={formData.description} onChange={handleInputChange} placeholder="Description de la simulation..." rows={3} />
+            </div>
 
-            <Separator />  
+            <Separator />
 
-            <div className="grid gap-2">  
-              <Label>Type de Géométrie</Label>  
-              <Select value={formData.geometryType} onValueChange={(value: 'simple' | 'complex') => handleSelectChange('geometryType', value)}>  
-                <SelectTrigger>  
-                  <SelectValue placeholder="Sélectionner le type de géométrie" />  
-                </SelectTrigger>  
-                <SelectContent>  
-                  <SelectItem value="simple">Simple (dimensions)</SelectItem>  
-                  <SelectItem value="complex">Complexe (fichier 3D)</SelectItem>  
-                </SelectContent>  
-              </Select>  
-            </div>  
+            <div className="grid gap-2">
+              <Label>Type de Géométrie</Label>
+              <Select value={formData.geometryType} onValueChange={(value: 'simple' | 'complex') => handleSelectChange('geometryType', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner le type de géométrie" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="simple">Simple (dimensions)</SelectItem>
+                  <SelectItem value="complex">Complexe (fichier 3D)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-            {formData.geometryType === 'simple' ? (  
-              <div className="grid grid-cols-3 gap-4">  
-                <div className="grid gap-2">  
-                  <Label htmlFor="width">Largeur (mm)</Label>  
-                  <Input id="width" type="number" value={formData.geometryConfig.dimensions.width} onChange={(e) => handleGeometryDimensionChange('width', e.target.value)} />  
-                </div>  
-                <div className="grid gap-2">  
-                  <Label htmlFor="height">Hauteur (mm)</Label>  
-                  <Input id="height" type="number" value={formData.geometryConfig.dimensions.height} onChange={(e) => handleGeometryDimensionChange('height', e.target.value)} />  
-                </div>  
-                <div className="grid gap-2">  
-                  <Label htmlFor="depth">Profondeur (mm)</Label>  
-                  <Input id="depth" type="number" value={formData.geometryConfig.dimensions.depth} onChange={(e) => handleGeometryDimensionChange('depth', e.target.value)} />  
-                </div>  
-              </div>  
-            ) : (  
-              <div className="grid gap-2">  
-                <Label htmlFor="geometryFile">Fichier de Géométrie 3D</Label>  
-                <div className="flex items-center space-x-2">  
-                  <Input id="geometryFile" type="file" onChange={handleFileUpload} className="flex-1" disabled={uploadingFile} />  
-                  <Button type="button" onClick={() => document.getElementById('geometryFile')?.click()} disabled={uploadingFile}>  
-                    {uploadingFile ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}  
-                    Choisir un fichier  
-                  </Button>  
-                </div>  
-                {uploadingFile && uploadProgress > 0 && (  
-                  <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">  
-                    <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${uploadProgress}%` }}></div>  
+            {formData.geometryType === 'simple' ? (
+              <div className="grid grid-cols-3 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="width">Largeur (mm)</Label>
+                  <Input id="width" type="number" value={formData.geometryConfig.dimensions.width} onChange={(e) => handleGeometryDimensionChange('width', e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="height">Hauteur (mm)</Label>
+                  <Input id="height" type="number" value={formData.geometryConfig.dimensions.height} onChange={(e) => handleGeometryDimensionChange('height', e.target.value)} />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="depth">Profondeur (mm)</Label>
+                  <Input id="depth" type="number" value={formData.geometryConfig.dimensions.depth} onChange={(e) => handleGeometryDimensionChange('depth', e.target.value)} />
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                <Label htmlFor="geometryFile">Fichier de Géométrie 3D</Label>
+                <div className="flex items-center space-x-2">
+                  <Input id="geometryFile" type="file" onChange={handleFileUpload} className="flex-1" disabled={uploadingFile} />
+                  <Button type="button" onClick={() => document.getElementById('geometryFile')?.click()} disabled={uploadingFile}>
+                    {uploadingFile ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}
+                    Choisir un fichier
+                  </Button>
+                </div>
+                {uploadingFile && uploadProgress > 0 && (
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                    <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${uploadProgress}%` }}></div>
                     <p className="text-xs text-muted-foreground mt-1">
                       {uploadPhase === 'uploading' ? `Téléchargement en cours: ${uploadProgress}%` : 'Finalisation...'}
-                    </p>  
-                  </div>  
-                )}  
-                {uploadError && (  
-                  <Alert variant="destructive" className="mt-2">  
-                    <Shield className="h-4 w-4" />  
-                    <AlertDescription>{uploadError}</AlertDescription>  
-                  </Alert>  
-                )}  
-                {formData.geometryConfig.file_name && !uploadError && (  
-                  <div className="flex items-center justify-between text-sm text-muted-foreground mt-2">  
+                    </p>
+                  </div>
+                )}
+                {uploadError && (
+                  <Alert variant="destructive" className="mt-2">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>{uploadError}</AlertDescription>
+                  </Alert>
+                )}
+                {formData.geometryConfig.file_name && !uploadError && (
+                  <div className="flex items-center justify-between text-sm text-muted-foreground mt-2">
                     <span>
-                      <CheckCircle className="inline h-4 w-4 text-green-500 mr-1" /> 
+                      <CheckCircle className="inline h-4 w-4 text-green-500 mr-1" />
                       {formData.geometryConfig.file_name} ({(formData.geometryConfig.file_size / 1024 / 1024).toFixed(2)} MB)
-                    </span>  
-                  </div>  
-                )}  
+                    </span>
+                  </div>
+                )}
                 <p className="text-sm text-muted-foreground mt-1">
                   Formats supportés: STL, STEP, OBJ, VTP, VTI, PLY, VTK, IGES, IGS, VTU
-                </p>  
-              </div>  
-            )}  
+                </p>
+              </div>
+            )}
 
-            <Separator />  
+            <Separator />
 
-            <div className="grid gap-2">  
-              <Label>Matériau</Label>  
-              <Select value={formData.materialId} onValueChange={(value) => handleSelectChange('materialId', value)}>  
-                <SelectTrigger>  
-                  <SelectValue placeholder="Sélectionner un matériau" />  
-                </SelectTrigger>  
-                <SelectContent>  
-                  {materialsData.map((material) => (  
-                    <SelectItem key={material.id} value={material.id}>  
-                      {material.name}  
-                    </SelectItem>  
-                  ))}  
-                </SelectContent>  
-              </Select>  
-              {currentMaterial && (  
-                <div className="text-sm text-muted-foreground mt-1">  
-                  <p>Conductivité: {currentMaterial.conductivity} W/m·K</p>  
-                  <p>Densité: {currentMaterial.density} kg/m³</p>  
-                  <p>Chaleur spécifique: {currentMaterial.specific_heat} J/kg·K</p>  
-                </div>  
-              )}  
-            </div>  
+            <div className="grid gap-2">
+              <Label>Matériau</Label>
+              <Select value={formData.materialId} onValueChange={(value) => handleSelectChange('materialId', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner un matériau" />
+                </SelectTrigger>
+                <SelectContent>
+                  {materialsData.map((material) => (
+                    <SelectItem key={material.id} value={material.id}>
+                      {material.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {currentMaterial && (
+                <div className="text-sm text-muted-foreground mt-1">
+                  <p>Conductivité: {currentMaterial.conductivity} W/m·K</p>
+                  <p>Densité: {currentMaterial.density} kg/m³</p>
+                  <p>Chaleur spécifique: {currentMaterial.specific_heat} J/kg·K</p>
+                </div>
+              )}
+            </div>
 
-            <div className="grid gap-2">  
-              <Label>Densité de maillage</Label>  
-              <Select value={formData.meshDensity} onValueChange={(value: 'low' | 'medium' | 'high') => handleSelectChange('meshDensity', value)}>  
-                <SelectTrigger>  
-                  <SelectValue placeholder="Sélectionner la densité" />  
-                </SelectTrigger>  
-                <SelectContent>  
-                  <SelectItem value="low">Faible (calcul rapide)</SelectItem>  
-                  <SelectItem value="medium">Moyen (équilibre précision/temps)</SelectItem>  
-                  <SelectItem value="high">Élevé (haute précision)</SelectItem>  
-                </SelectContent>  
-              </Select>  
-            </div>  
+            <div className="grid gap-2">
+              <Label>Densité de maillage</Label>
+              <Select value={formData.meshDensity} onValueChange={(value: 'low' | 'medium' | 'high') => handleSelectChange('meshDensity', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner la densité" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">Faible (calcul rapide)</SelectItem>
+                  <SelectItem value="medium">Moyen (équilibre précision/temps)</SelectItem>
+                  <SelectItem value="high">Élevé (haute précision)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-            <div className="grid grid-cols-2 gap-4">  
-              <div className="grid gap-2">  
-                <Label htmlFor="initialTemp">Température initiale (°C)</Label>  
-                <Input id="initialTemp" name="initialTemp" value={formData.initialTemp} onChange={handleInputChange} type="number" />  
-              </div>  
-              <div className="grid gap-2">  
-                <Label htmlFor="ambientTemp">Température ambiante (°C)</Label>  
-                <Input id="ambientTemp" name="ambientTemp" value={formData.ambientTemp} onChange={handleInputChange} type="number" />  
-              </div>  
-            </div>  
+            {/* Affichage des dimensions du maillage */}
+            <div className="grid grid-cols-3 gap-2">
+              <div className="grid gap-1">
+                <Label htmlFor="nx">NX</Label>
+                <Input id="nx" name="nx" type="number" value={formData.nx} onChange={handleInputChange} min={5} max={500} />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="ny">NY</Label>
+                <Input id="ny" name="ny" type="number" value={formData.ny} onChange={handleInputChange} min={5} max={500} />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="nz">NZ</Label>
+                <Input id="nz" name="nz" type="number" value={formData.nz} onChange={handleInputChange} min={5} max={500} />
+              </div>
+            </div>
 
-            <div className="grid gap-2">  
-              <Label>Type de refroidissement</Label>  
-              <Select value={formData.coolingType} onValueChange={(value: 'natural_convection' | 'forced_convection' | 'radiation') => handleSelectChange('coolingType', value)}>  
-                <SelectTrigger>  
-                  <SelectValue placeholder="Sélectionner le type" />  
-                </SelectTrigger>  
-                <SelectContent>  
-                  <SelectItem value="natural_convection">Convection naturelle</SelectItem>  
-                  <SelectItem value="forced_convection">Convection forcée</SelectItem>  
-                  <SelectItem value="radiation">Radiation</SelectItem>  
-                </SelectContent>  
-              </Select>  
-            </div>  
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="initialTemp">Température initiale (°C)</Label>
+                <Input id="initialTemp" name="initialTemp" value={formData.initialTemp} onChange={handleInputChange} type="number" />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ambientTemp">Température ambiante (°C)</Label>
+                <Input id="ambientTemp" name="ambientTemp" value={formData.ambientTemp} onChange={handleInputChange} type="number" />
+              </div>
+            </div>
 
-            <div className="grid gap-2">  
-              <Label>Solveur</Label>  
-              <Select value={formData.solverType} onValueChange={(value: any) => handleSelectChange('solverType', value)}>  
-                <SelectTrigger>  
-                  <SelectValue placeholder="Sélectionner le solveur" />  
-                </SelectTrigger>  
-                <SelectContent>  
-                  <SelectItem value="fem_fortran">FEM Fortran (1D/2D/3D)</SelectItem>  
-                  <SelectItem value="openfoam">OpenFOAM (3D complexe)</SelectItem>  
-                  <SelectItem value="ansys">ANSYS</SelectItem>  
-                  <SelectItem value="comsol">COMSOL</SelectItem>  
-                </SelectContent>  
-              </Select>  
-              <p className="text-xs text-muted-foreground mt-1">  
-                {formData.solverType === 'fem_fortran' && "Solveur Fortran optimisé pour les géométries 1D/2D"}  
-                {formData.solverType === 'openfoam' && "Solveur CFD pour les géométries 3D complexes"}  
-              </p>  
-            </div>  
+            <div className="grid gap-2">
+              <Label>Type de refroidissement</Label>
+              <Select value={formData.coolingType} onValueChange={(value: 'natural_convection' | 'forced_convection' | 'radiation') => handleSelectChange('coolingType', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner le type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="natural_convection">Convection naturelle</SelectItem>
+                  <SelectItem value="forced_convection">Convection forcée</SelectItem>
+                  <SelectItem value="radiation">Radiation</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
 
-            {simulation?.status === 'failed' && simulation?.error_message && (  
-              <Alert variant="destructive">  
-                <AlertCircle className="h-4 w-4" />  
-                <AlertDescription>  
-                  La simulation a échoué: {simulation.error_message}  
-                </AlertDescription>  
-              </Alert>  
-            )}  
-          </CardContent>  
-        </Card>  
-      </main>  
-    </div>  
+            <div className="grid gap-2">
+              <Label>Solveur</Label>
+              <Select value={formData.solverType} onValueChange={(value: any) => handleSelectChange('solverType', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner le solveur" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fem_fortran">FEM Fortran (1D/2D/3D)</SelectItem>
+                  <SelectItem value="openfoam">OpenFOAM (3D complexe)</SelectItem>
+                  <SelectItem value="ansys">ANSYS</SelectItem>
+                  <SelectItem value="comsol">COMSOL</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {formData.solverType === 'fem_fortran' && "Solveur Fortran optimisé pour les géométries 1D/2D"}
+                {formData.solverType === 'openfoam' && "Solveur CFD pour les géométries 3D complexes"}
+              </p>
+            </div>
+
+            {simulation?.status === 'failed' && simulation?.error_message && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  La simulation a échoué: {simulation.error_message}
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      </main>
+    </div>
   );
 }
