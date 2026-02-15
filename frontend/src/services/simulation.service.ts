@@ -1,4 +1,3 @@
-// simulation.service.ts - VERSION CORRIGÉE AVEC TIMEOUTS AUGMENTÉS
 import { supabase } from '@/lib/supabase';
 import type { Database } from '@/lib/database.types';
 
@@ -17,7 +16,7 @@ export type FluidType = 'air' | 'water' | 'oil';
 
 export interface SimulationConfig {
   geometry_config: {
-    type?: string;
+    type: string;
     file_url?: string;
     file_name?: string;
     file_path?: string;
@@ -66,7 +65,7 @@ export interface UploadGeometryResponse {
 }
 
 // -----------------------------------------------------------------------------
-// UTILS
+// UTILS - CORRIGÉ AVEC TIMEOUTS
 // -----------------------------------------------------------------------------
 
 const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> => {
@@ -95,7 +94,10 @@ export const getSimulations = async (): Promise<Simulation[]> => {
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
-    if (error) throw error;
+    if (error) {
+      throw error;
+    }
+
     return data as Simulation[];
   } catch (err) {
     console.error('Erreur récupération simulations:', err);
@@ -119,7 +121,10 @@ export const getSimulationById = async (id: string): Promise<Simulation> => {
       .eq('user_id', userId)
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw error;
+    }
+
     return data as Simulation;
   } catch (err) {
     console.error(`Erreur récupération simulation ${id}:`, err);
@@ -131,7 +136,7 @@ export const createSimulation = async (params: {
   name: string;
   description?: string;
   geometryType: string;
-  config: SimulationConfig;
+  config: SimulationConfig
 }): Promise<Simulation> => {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
@@ -154,12 +159,15 @@ export const createSimulation = async (params: {
         mesh_density: params.config.mesh_density,
         solver_type: params.config.solver_type || 'fem_fortran',
         status: 'pending',
-        progress: 0,
+        progress: 0
       })
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw error;
+    }
+
     return data;
   } catch (err) {
     console.error('Erreur création simulation:', err);
@@ -171,7 +179,7 @@ export const updateSimulation = async (id: string, params: {
   name: string;
   description?: string;
   geometryType: string;
-  config: SimulationConfig;
+  config: SimulationConfig
 }): Promise<Simulation> => {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
@@ -203,13 +211,16 @@ export const updateSimulation = async (id: string, params: {
         material_id: params.config.material_id,
         mesh_density: params.config.mesh_density,
         solver_type: params.config.solver_type || 'fem_fortran',
-        updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       })
       .eq('id', id)
       .select()
       .single();
 
-    if (error) throw error;
+    if (error) {
+      throw error;
+    }
+
     return data;
   } catch (err) {
     console.error(`Erreur mise à jour simulation ${id}:`, err);
@@ -217,15 +228,13 @@ export const updateSimulation = async (id: string, params: {
   }
 };
 
+// CORRIGÉ AVEC TIMEOUT AUGMENTÉ
 export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
   try {
-    console.log(`🚀 [startSimulation] Démarrage simulation ${simulationId}`);
-
     const { data: session, error: authError } = await supabase.auth.getSession();
     if (authError || !session?.session?.user?.id) {
       throw new Error('Utilisateur non authentifié');
     }
-
     const userId = session.session.user.id;
 
     const { data: simulation, error: fetchError } = await supabase
@@ -239,209 +248,72 @@ export const startSimulation = async (simulationId: string): Promise<StartSimula
       throw new Error('Simulation non trouvée ou accès non autorisé');
     }
 
-    if (simulation.status === 'running') {
-      throw new Error('La simulation est déjà en cours');
-    }
-    if (simulation.status === 'completed') {
-      throw new Error('La simulation est déjà terminée');
-    }
-
-    const materialData = simulation.materials || {
-      thermal_conductivity: 50.0,
-      density: 2700.0,
-      specific_heat: 900.0,
-    };
-
+    const materialData = simulation.materials || { thermal_conductivity: 50.0, density: 2700.0, specific_heat: 900.0 };
     const config = {
       geometry_config: simulation.geometry_config || {},
-      boundary_conditions: simulation.boundary_conditions || {
-        initial_temp: 1000,
-        ambient_temp: 25,
-        cooling_type: 'natural_convection',
-        convection_coeff: 10,
-        fluid_type: 'air',
-        fluid_velocity: 1,
-      },
+      boundary_conditions: simulation.boundary_conditions || { initial_temp: 1000, ambient_temp: 25, cooling_type: 'natural_convection', convection_coeff: 10, fluid_type: 'air', fluid_velocity: 1 },
       material_id: simulation.material_id || 'aluminum-6061',
       mesh_density: simulation.mesh_density || 'medium',
       solver_type: simulation.solver_type || 'fem_fortran',
-      material_properties: {
-        conductivity: materialData.thermal_conductivity || 50.0,
-        density: materialData.density || 2700.0,
-        specific_heat: materialData.specific_heat || 900.0,
-      },
+      material_properties: { conductivity: materialData.thermal_conductivity || 50.0, density: materialData.density || 2700.0, specific_heat: materialData.specific_heat || 900.0 }
     };
 
-    await supabase
-      .from('simulations')
-      .update({
-        progress: 10,
-        started_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', simulationId);
+    await supabase.from('simulations').update({ progress: 10, started_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('id', simulationId);
 
-    try {
-      const { data: edgeFunctionData, error: edgeFunctionError } = await withTimeout(
-        supabase.functions.invoke('simulate', {
-          body: { simulation_id: simulationId, config, user_id: userId },
-        }),
-        120000,
-        '❌ Timeout Edge Function (120s)'
-      );
+    const { data: edgeFunctionData, error: edgeFunctionError } = await withTimeout(
+      supabase.functions.invoke('simulate', {
+        body: { simulation_id: simulationId, config, user_id: userId }
+      }),
+      120000, // Timeout de 120 secondes
+      'Timeout: Le moteur de simulation ne répond pas (120s)'
+    );
 
-      if (edgeFunctionError) throw edgeFunctionError;
+    if (edgeFunctionError) throw edgeFunctionError;
+    if (!edgeFunctionData?.success) throw new Error(edgeFunctionData?.error || 'Erreur inconnue');
 
-      if (!edgeFunctionData?.success) {
-        throw new Error(edgeFunctionData?.error || 'Erreur inconnue lors de l\'exécution');
-      }
+    return { success: true, simulation_id: simulationId, status: edgeFunctionData.status || 'running', results: edgeFunctionData.results, message: edgeFunctionData.message || 'Simulation lancée' };
 
-      return {
-        success: true,
-        simulation_id: simulationId,
-        status: edgeFunctionData.status || 'running',
-        results: edgeFunctionData.results,
-        message: edgeFunctionData.message || 'Simulation lancée avec succès',
-      };
-    } catch (invokeError: any) {
-      await supabase
-        .from('simulations')
-        .update({
-          status: 'failed',
-          error_message: invokeError.message.substring(0, 500),
-          completed_at: new Date().toISOString(),
-        })
-        .eq('id', simulationId);
-      throw invokeError;
-    }
   } catch (error: any) {
-    console.error('💥 Erreur critique dans startSimulation:', error);
+    console.error(`Erreur lancement simulation ${simulationId}:`, error);
+    await supabase.from('simulations').update({ status: 'failed', error_message: error.message.substring(0, 500), completed_at: new Date().toISOString() }).eq('id', simulationId);
     throw error;
   }
 };
 
-// 🔥 CORRECTION CRITIQUE: Timeouts augmentés et création auto si nécessaire
-export const uploadGeometry = async (params: {
-  file: File;
-  simulationId?: string; // Optionnel: si non fourni, on crée d'abord la simulation
-  simulationName?: string;
-  materialId?: string;
-}): Promise<UploadGeometryResponse & { simulationId?: string }> => {
+// CORRIGÉ AVEC TIMEOUTS AUGMENTÉS ET CHEMIN RLS
+export const uploadGeometry = async (params: { file: File; simulationId: string; }): Promise<UploadGeometryResponse> => {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
     if (authError || !session?.session?.user?.id) {
       throw new Error('Utilisateur non authentifié');
     }
-
     const userId = session.session.user.id;
-    const { file, simulationId: providedSimId, simulationName, materialId } = params;
+    const { file, simulationId } = params;
 
-    // Étape 1 : Créer la simulation si aucun ID fourni
-    let effectiveSimId = providedSimId;
-    if (!effectiveSimId) {
-      const name = simulationName || file.name.replace(/\.[^/.]+$/, '');
-      const { data: newSim, error: createError } = await supabase
-        .from('simulations')
-        .insert({
-          user_id: userId,
-          name: name,
-          description: `Simulation créée depuis le fichier ${file.name}`,
-          geometry_type: 'complex',
-          geometry_config: { file_name: file.name },
-          material_id: materialId || null,
-          mesh_density: 'medium',
-          solver_type: 'fem_fortran',
-          status: 'pending',
-          progress: 0,
-        })
-        .select()
-        .single();
-
-      if (createError) throw createError;
-      effectiveSimId = newSim.id;
-      console.log('✅ Simulation créée avec ID:', effectiveSimId);
-    }
-
-    // Étape 2 : Upload du fichier vers Storage avec timeout 60s
     const timestamp = Date.now();
-    const uniqueId = Math.random().toString(36).substring(2, 9);
-    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'vtp';
-    const storagePath = `${userId}/${effectiveSimId}/${timestamp}_${uniqueId}.${fileExt}`;
-
-    console.log('📤 Upload vers simulation-files - Chemin:', storagePath);
+    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'stl';
+    const storagePath = `${userId}/${simulationId}/${timestamp}_${file.name}`;
 
     const { error: uploadError } = await withTimeout(
-      supabase.storage.from('simulation-files').upload(storagePath, file, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: 'application/octet-stream',
-      }),
-      60000, // 60 secondes pour l'upload
-      '❌ Supabase Storage upload timeout (60s)'
+      supabase.storage.from('simulation-files').upload(storagePath, file, { cacheControl: '3600', upsert: true, contentType: 'application/octet-stream' }),
+      60000, // Timeout de 60 secondes pour l'upload
+      'Timeout: Envoi du fichier au serveur a échoué (60s)'
     );
-
     if (uploadError) throw uploadError;
-
-    // Étape 3 : Obtenir l'URL publique
-    const { data: urlData } = supabase.storage
-      .from('simulation-files')
-      .getPublicUrl(storagePath);
-
-    const fileUrl = urlData.publicUrl;
-
-    // Étape 4 : Appel Edge Function pour analyse (timeout 90s)
-    const arrayBuffer = await file.arrayBuffer();
-    const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
 
     const { data: edgeFunctionData, error: edgeFunctionError } = await withTimeout(
       supabase.functions.invoke('upload-geometry', {
-        body: {
-          fileName: file.name,
-          fileData: base64String,
-          userId: userId,
-          simulation_id: effectiveSimId,
-          path: storagePath,
-          fileUrl,
-        },
+        body: { simulation_id: simulationId, path: storagePath, fileName: file.name, userId: userId }
       }),
-      90000, // 90 secondes pour l'analyse
-      '❌ Edge Function timeout (90s)'
+      90000, // Timeout de 90 secondes pour l'analyse
+      'Timeout: Le serveur a mis trop de temps pour analyser le fichier (90s)'
     );
-
     if (edgeFunctionError) throw edgeFunctionError;
 
-    // Étape 5 : Mise à jour de la simulation avec les infos du fichier
-    const updatePayload: any = {
-      geometry_config: {
-        file_url: fileUrl,
-        file_name: file.name,
-        file_size: file.size,
-        file_path: storagePath,
-        geometry_type: edgeFunctionData?.geometry_type || '3d_complex',
-        solver_suggestion: edgeFunctionData?.solver_suggestion,
-        estimated_dimensions: edgeFunctionData?.estimated_dimensions,
-      },
-    };
+    return { ...edgeFunctionData, success: true, path: storagePath };
 
-    await supabase
-      .from('simulations')
-      .update(updatePayload)
-      .eq('id', effectiveSimId);
-
-    return {
-      success: true,
-      fileUrl,
-      fileName: file.name,
-      fileSize: file.size,
-      path: storagePath,
-      geometry_type: edgeFunctionData?.geometry_type,
-      solver_suggestion: edgeFunctionData?.solver_suggestion,
-      estimated_dimensions: edgeFunctionData?.estimated_dimensions,
-      message: edgeFunctionData?.message || 'Fichier uploadé avec succès',
-      simulationId: effectiveSimId,
-    };
   } catch (error: any) {
-    console.error('❌ Erreur upload géométrie:', error);
+    console.error('Erreur upload géométrie:', error);
     throw error;
   }
 };
@@ -452,16 +324,11 @@ export const deleteSimulation = async (id: string): Promise<void> => {
     if (authError || !session?.session?.user?.id) {
       throw new Error('Utilisateur non authentifié');
     }
-
     const userId = session.session.user.id;
 
-    const { error } = await supabase
-      .from('simulations')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
-
+    const { error } = await supabase.from('simulations').delete().eq('id', id).eq('user_id', userId);
     if (error) throw error;
+
   } catch (err) {
     console.error(`Erreur suppression simulation ${id}:`, err);
     throw err;
@@ -469,14 +336,8 @@ export const deleteSimulation = async (id: string): Promise<void> => {
 };
 
 export const subscribeToSimulation = (id: string, callback: (payload: any) => void) => {
-  return supabase
-    .channel(`sim-${id}`)
-    .on('postgres_changes', {
-      event: '*',
-      schema: 'public',
-      table: 'simulations',
-      filter: `id=eq.${id}`,
-    }, callback)
+  return supabase.channel(`sim-${id}`)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'simulations', filter: `id=eq.${id}` }, callback)
     .subscribe();
 };
 
@@ -486,42 +347,27 @@ export const unsubscribeFromChannel = (channel: any) => {
   }
 };
 
-export async function updateSimulationStatus(
-  simulationId: string,
-  status: SimulationStatus,
-  errorMessage?: string
-): Promise<Simulation> {
+export async function updateSimulationStatus(simulationId: string, status: SimulationStatus, errorMessage?: string): Promise<Simulation> {
   try {
     const { data: session, error: authError } = await supabase.auth.getSession();
     if (authError || !session?.session?.user?.id) {
       throw new Error('Utilisateur non authentifié');
     }
-
     const userId = session.session.user.id;
 
-    const updateData: any = {
-      status,
-      updated_at: new Date().toISOString(),
-    };
-
+    const updateData: any = { status, updated_at: new Date().toISOString() };
     if (status === 'completed' || status === 'failed') {
       updateData.completed_at = new Date().toISOString();
     }
-
     if (errorMessage && status === 'failed') {
       updateData.error_message = errorMessage.substring(0, 500);
     }
 
-    const { data, error } = await supabase
-      .from('simulations')
-      .update(updateData)
-      .eq('id', simulationId)
-      .eq('user_id', userId)
-      .select()
-      .single();
-
+    const { data, error } = await supabase.from('simulations').update(updateData).eq('id', simulationId).eq('user_id', userId).select().single();
     if (error) throw error;
+
     return data;
+
   } catch (err) {
     console.error(`Erreur mise à jour statut simulation ${simulationId}:`, err);
     throw err;
@@ -534,31 +380,16 @@ export async function getUserSimulationStats() {
     if (authError || !session?.session?.user?.id) {
       throw new Error('Utilisateur non authentifié');
     }
-
     const userId = session.session.user.id;
 
-    const { data, error } = await supabase
-      .from('simulations')
-      .select('status, solver_type, mesh_density')
-      .eq('user_id', userId);
-
+    const { data, error } = await supabase.from('simulations').select('status, solver_type, mesh_density').eq('user_id', userId);
     if (error) throw error;
 
     const stats = {
       totalSimulations: data.length,
-      byStatus: {
-        pending: 0,
-        running: 0,
-        completed: 0,
-        failed: 0,
-        cancelled: 0,
-      },
+      byStatus: { pending: 0, running: 0, completed: 0, failed: 0, cancelled: 0 },
       bySolverType: {} as Record<string, number>,
-      byMeshDensity: {
-        low: 0,
-        medium: 0,
-        high: 0,
-      },
+      byMeshDensity: { low: 0, medium: 0, high: 0 },
     };
 
     data.forEach((simulation) => {
@@ -567,15 +398,13 @@ export async function getUserSimulationStats() {
       }
       const solver = simulation.solver_type || 'unknown';
       stats.bySolverType[solver] = (stats.bySolverType[solver] || 0) + 1;
-      if (
-        simulation.mesh_density &&
-        stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity] !== undefined
-      ) {
+      if (simulation.mesh_density && stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity] !== undefined) {
         stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity]++;
       }
     });
 
     return stats;
+
   } catch (err) {
     console.error('Erreur lors de la récupération des statistiques:', err);
     throw err;
@@ -593,7 +422,7 @@ export const SimulationService = {
   subscribeToSimulation,
   unsubscribeFromChannel,
   updateSimulationStatus,
-  getUserSimulationStats,
+  getUserSimulationStats
 };
 
 export default SimulationService;
