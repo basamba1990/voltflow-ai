@@ -1,4 +1,4 @@
-// src/pages/SimulationEditor.tsx - VERSION FINALE CORRIGÉE
+// src/pages/SimulationEditor.tsx - VERSION FINALE CORRIGÉE (LOGIQUE UPLOAD & TIMEOUT)
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
@@ -64,7 +64,7 @@ export default function SimulationEditor() {
       file_name: '',
       file_size: 0,
       file_path: '',
-      dimensions: { width: 100, height: 100, depth: 100 },
+      dimensions: { width: 100, height: 100, depth: 100 }
     },
     materialId: '',
     meshDensity: 'medium' as 'low' | 'medium' | 'high',
@@ -77,17 +77,7 @@ export default function SimulationEditor() {
     convectionCoeff: '10',
     fluidType: 'air' as 'air' | 'water' | 'oil',
     fluidVelocity: '1',
-    solverType: 'fem_fortran' as
-      | 'fem_fortran'
-      | 'openfoam'
-      | 'ansys'
-      | 'comsol'
-      | 'abaqus'
-      | 'starccm'
-      | 'fluent'
-      | 'cfx'
-      | 'pinn'
-      | 'custom',
+    solverType: 'fem_fortran' as 'fem_fortran' | 'openfoam' | 'ansys' | 'comsol' | 'abaqus' | 'starccm' | 'fluent' | 'cfx' | 'pinn' | 'custom',
   });
 
   // État de la vue
@@ -150,14 +140,10 @@ export default function SimulationEditor() {
   // Icône selon le type
   const getGeometryIcon = (geometryType: string) => {
     switch (geometryType) {
-      case '1d_rod':
-        return BarChart3;
-      case '2d_plate':
-        return Square;
-      case '3d_complex':
-        return Box;
-      default:
-        return Box;
+      case '1d_rod': return BarChart3;
+      case '2d_plate': return Square;
+      case '3d_complex': return Box;
+      default: return Box;
     }
   };
 
@@ -167,7 +153,7 @@ export default function SimulationEditor() {
       const bc = simulation.boundary_conditions as any;
       const gc = simulation.geometry_config as any;
 
-      setFormData((prev) => ({
+      setFormData(prev => ({
         ...prev,
         name: simulation.name || '',
         description: simulation.description || '',
@@ -177,7 +163,7 @@ export default function SimulationEditor() {
           file_name: gc?.file_name || '',
           file_size: gc?.file_size || 0,
           file_path: gc?.file_path || '',
-          dimensions: gc?.dimensions || { width: 100, height: 100, depth: 100 },
+          dimensions: gc?.dimensions || { width: 100, height: 100, depth: 100 }
         },
         materialId: simulation.material_id || '',
         meshDensity: simulation.mesh_density || 'medium',
@@ -197,14 +183,10 @@ export default function SimulationEditor() {
 
   // Mise à jour automatique de nx, ny, nz quand meshDensity ou geometryType change
   useEffect(() => {
-    const geometryType =
-      formData.geometryType === 'complex'
-        ? '3d_complex'
-        : formData.geometryConfig.file_name
-        ? detectGeometryType(formData.geometryConfig.file_name)
-        : '3d_complex';
+    const geometryType = formData.geometryType === 'complex' ? '3d_complex' : 
+                         (formData.geometryConfig.file_name ? detectGeometryType(formData.geometryConfig.file_name) : '3d_complex');
     const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
-    setFormData((prev) => ({ ...prev, nx, ny, nz }));
+    setFormData(prev => ({ ...prev, nx, ny, nz }));
   }, [formData.meshDensity, formData.geometryType, formData.geometryConfig.file_name, getMeshDimensions]);
 
   // Préparation des données pour le viewer
@@ -225,10 +207,9 @@ export default function SimulationEditor() {
         min: Math.min(...tempArray),
         max: Math.max(...tempArray),
         timestamp: simulation?.created_at || new Date().toISOString(),
-        material: formData.materialId
-          ? (materialsData.find((m) => m.id === formData.materialId)?.name.toLowerCase() as any)
-          : 'steel',
-        thermal_conductivity: materialsData.find((m) => m.id === formData.materialId)?.conductivity || 50,
+        material: formData.materialId ?
+          materialsData.find(m => m.id === formData.materialId)?.name.toLowerCase() as any : 'steel',
+        thermal_conductivity: materialsData.find(m => m.id === formData.materialId)?.conductivity || 50,
       });
     }
 
@@ -265,151 +246,118 @@ export default function SimulationEditor() {
     return {
       mesh: {
         url: results.vtk_file_url || results.geometry_url || '',
-        type: results.vtk_file_url?.endsWith('.vtp') ? 'vtp' : results.vtk_file_url?.endsWith('.stl') ? 'stl' : 'vtp',
+        type: results.vtk_file_url?.endsWith('.vtp') ? 'vtp' :
+              results.vtk_file_url?.endsWith('.stl') ? 'stl' : 'vtp',
         metadata: results.mesh_metadata,
       },
       fields,
       config,
       legend,
-      simulation: simulation
-        ? {
-            engine: simulation.solver_type || 'fem_fortran',
-            case_name: simulation.name,
-            version: '1.0',
-            timestamp: simulation.created_at || new Date().toISOString(),
-          }
-        : undefined,
+      simulation: simulation ? {
+        engine: simulation.solver_type || 'fem_fortran',
+        case_name: simulation.name,
+        version: '1.0',
+        timestamp: simulation.created_at || new Date().toISOString(),
+      } : undefined,
     };
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
-  // Gestion de l'upload de fichier - version robuste avec création auto si besoin
+  // CORRECTION CRITIQUE : handleFileUpload (Stabilisé avec création auto)
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // 1. Validation de base
+    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk', '.iges', '.igs', '.vtu'];
+    const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+    if (!validExtensions.includes(fileExt)) {
+      toast.error(`Format non supporté: ${fileExt}`);
+      return;
+    }
+
+    // 2. Sauvegarder d'abord si c'est une nouvelle simulation
+    let currentId = id;
+    if (!currentId) {
+      setIsSaving(true);
+      try {
+        const simulationData = {
+          name: formData.name || `Simulation ${file.name}`,
+          description: formData.description,
+          geometry_type: formData.geometryType,
+          config: {
+            geometry_config: { ...formData.geometryConfig, nx: formData.nx, ny: formData.ny, nz: formData.nz },
+            boundary_conditions: {
+              initial_temp: parseFloat(formData.initialTemp),
+              ambient_temp: parseFloat(formData.ambientTemp),
+              cooling_type: formData.coolingType,
+              convection_coeff: parseFloat(formData.convectionCoeff),
+              fluid_type: formData.fluidType,
+              fluid_velocity: parseFloat(formData.fluidVelocity),
+            },
+            material_id: formData.materialId || 'aluminum-6061',
+            mesh_density: formData.meshDensity,
+            solver_type: formData.solverType,
+          },
+        };
+        const saved = await SimulationService.createSimulation(simulationData);
+        currentId = saved.id;
+        setLocation(`/simulation/${currentId}`);
+        toast.success('Simulation initialisée pour l\'upload.');
+      } catch (err: any) {
+        toast.error(`Échec création simulation: ${err.message}`);
+        setIsSaving(false);
+        return;
+      } finally {
+        setIsSaving(false);
+      }
+    }
+
+    // 3. Lancer l'upload
     setUploadingFile(true);
     setUploadError(null);
     setUploadProgress(0);
     setUploadPhase('uploading');
 
-    if (uploadTimeoutRef.current) {
-      clearTimeout(uploadTimeoutRef.current);
-      uploadTimeoutRef.current = null;
-    }
-
-    const file = e.target.files?.[0];
-    if (!file) {
-      setUploadingFile(false);
-      toast.error('Aucun fichier sélectionné');
-      return;
-    }
-
-    // Validation extension
-    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk', '.iges', '.igs', '.vtu'];
-    const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
-    if (!validExtensions.includes(fileExt)) {
-      setUploadingFile(false);
-      toast.error(`Extension non supportée: ${fileExt}. Formats: ${validExtensions.join(', ')}`);
-      return;
-    }
-
-    // Validation taille
-    const maxSize = 50 * 1024 * 1024;
-    if (file.size > maxSize) {
-      setUploadingFile(false);
-      toast.error(`Fichier trop volumineux (${(file.size / 1024 / 1024).toFixed(1)}MB). Max: 50MB`);
-      return;
-    }
-
-    // Si pas d'ID, on va en créer une automatiquement
-    const effectiveSimId = id || 'new';
-    let newSimId: string | undefined;
-
     try {
-      console.log('🚀 Début upload:', file.name);
-
+      // Augmentation du timeout visuel
       const progressInterval = setInterval(() => {
-        setUploadProgress((prev) => {
-          if (prev < 80) {
-            return Math.min(prev + 5, 80);
-          } else {
-            if (uploadPhase !== 'finalizing') {
-              setUploadPhase('finalizing');
-            }
-            return Math.min(prev + 2, 95);
-          }
-        });
+        setUploadProgress(prev => (prev < 90 ? prev + 2 : prev));
       }, 500);
 
-      // Appel du service avec création auto si nécessaire
       const result = await SimulationService.uploadGeometry({
         file,
-        simulationId: id || undefined,
-        simulationName: formData.name || file.name.replace(/\.[^/.]+$/, ''),
-        materialId: formData.materialId || undefined,
+        simulationId: currentId as string
       });
 
       clearInterval(progressInterval);
-      setUploadPhase('idle');
       setUploadProgress(100);
-
-      console.log('✅ Upload réussi:', result);
-      newSimId = result.simulationId;
-
-      const geometryType = result.geometry_type || detectGeometryType(result.fileName);
+      setUploadPhase('idle');
+      
+      const geometryType = detectGeometryType(result.fileName);
       const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
 
-      setFormData((prev) => ({
+      setFormData(prev => ({
         ...prev,
         geometryType: geometryType === '1d_rod' ? 'simple' : 'complex',
-        nx,
-        ny,
-        nz,
+        nx, ny, nz,
         geometryConfig: {
           ...prev.geometryConfig,
           file_url: result.fileUrl,
           file_name: result.fileName,
           file_size: result.fileSize || 0,
           file_path: result.path || '',
-        },
+        }
       }));
 
-      toast.success(
-        <div className="flex items-start space-x-2">
-          {React.createElement(getGeometryIcon(geometryType), { className: 'h-5 w-5 mt-0.5 text-blue-500' })}
-          <div>
-            <p className="font-medium">Géométrie uploadée avec succès</p>
-            <p className="text-sm text-gray-600">
-              Type détecté: <Badge variant="outline">{geometryType}</Badge>
-            </p>
-          </div>
-        </div>
-      );
-
-      // Si c'était une nouvelle simulation, rediriger vers l'ID créé
-      if (!id && newSimId) {
-        setLocation(`/simulation/${newSimId}`);
-      } else {
-        refresh();
-      }
-
-      // Lancement automatique (optionnel, peut être retiré si préféré)
-      const simIdToStart = newSimId || id;
-      if (simIdToStart) {
-        console.log('🚀 Lancement automatique de la simulation...');
-        try {
-          await startSimulationHook(simIdToStart);
-          toast.success('Simulation lancée automatiquement !');
-        } catch (simError: any) {
-          console.error('❌ Erreur lancement automatique:', simError);
-          toast.error(`Upload réussi mais échec du lancement: ${simError.message}`);
-        }
-      }
+      toast.success('Fichier STL uploadé avec succès !');
+      refresh();
     } catch (error: any) {
-      setUploadingFile(false);
       setUploadPhase('idle');
       setUploadProgress(0);
-      const errorMessage = error.message || 'Une erreur inconnue est survenue lors de l\'upload.';
-      setUploadError(errorMessage);
-      toast.error(`Échec de l'upload: ${errorMessage}`);
-      console.error('❌ Erreur handleFileUpload:', error);
+      setUploadError(error.message);
+      toast.error(`Erreur upload: ${error.message}`);
+    } finally {
+      setUploadingFile(false);
     }
   };
 
@@ -447,12 +395,11 @@ export default function SimulationEditor() {
         },
       };
 
-      let savedSimulation;
       if (id) {
-        savedSimulation = await SimulationService.updateSimulation(id, simulationData);
+        await SimulationService.updateSimulation(id, simulationData);
         toast.success('Simulation mise à jour avec succès !');
       } else {
-        savedSimulation = await SimulationService.createSimulation(simulationData);
+        const savedSimulation = await SimulationService.createSimulation(simulationData);
         toast.success('Simulation créée avec succès !');
         setLocation(`/simulation/${savedSimulation.id}`);
       }
@@ -534,25 +481,25 @@ export default function SimulationEditor() {
 
   const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   }, []);
 
   const handleSelectChange = useCallback((name: string, value: string) => {
-    setFormData((prev) => ({ ...prev, [name]: value }));
+    setFormData(prev => ({ ...prev, [name]: value }));
   }, []);
 
   const handleGeometryDimensionChange = useCallback((dim: string, value: string) => {
-    setFormData((prev) => ({
+    setFormData(prev => ({
       ...prev,
       geometryConfig: {
         ...prev.geometryConfig,
-        dimensions: { ...prev.geometryConfig.dimensions, [dim]: parseFloat(value) || 0 },
-      },
+        dimensions: { ...prev.geometryConfig.dimensions, [dim]: parseFloat(value) || 0 }
+      }
     }));
   }, []);
 
   const currentMaterial = useMemo(() => {
-    return materialsData.find((m) => m.id === formData.materialId);
+    return materialsData.find(m => m.id === formData.materialId);
   }, [formData.materialId, materialsData]);
 
   const isFormValid = useMemo(() => {
@@ -596,28 +543,13 @@ export default function SimulationEditor() {
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>Visualisation 3D</CardTitle>
             <div className="flex items-center space-x-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setViewState((prev) => ({ ...prev, showGrid: !prev.showGrid }))}
-                title="Afficher/Masquer Grille"
-              >
+              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showGrid: !prev.showGrid }))} title="Afficher/Masquer Grille">
                 {viewState.showGrid ? <Grid3x3 className="h-4 w-4" /> : <Grid3x3 className="h-4 w-4 text-muted-foreground" />}
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setViewState((prev) => ({ ...prev, showAxes: !prev.showAxes }))}
-                title="Afficher/Masquer Axes"
-              >
+              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, showAxes: !prev.showAxes }))} title="Afficher/Masquer Axes">
                 {viewState.showAxes ? <Box className="h-4 w-4" /> : <Box className="h-4 w-4 text-muted-foreground" />}
               </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setViewState((prev) => ({ ...prev, isFullscreen: !prev.isFullscreen }))}
-                title="Plein écran"
-              >
+              <Button variant="ghost" size="icon" onClick={() => setViewState(prev => ({ ...prev, isFullscreen: !prev.isFullscreen }))} title="Plein écran">
                 {viewState.isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
               </Button>
             </div>
@@ -656,11 +588,9 @@ export default function SimulationEditor() {
             {selectedPoint && (
               <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm p-3 rounded-lg shadow-lg text-sm">
                 <h4 className="font-semibold mb-1">Détails du point</h4>
-                <p>Position: ({selectedPoint.position.map((c) => c.toFixed(2)).join(', ')})</p>
+                <p>Position: ({selectedPoint.position.map(c => c.toFixed(2)).join(', ')})</p>
                 {Object.entries(selectedPoint.field_values).map(([key, value]) => (
-                  <p key={key}>
-                    {key}: {value.toFixed(2)} {prepareViewerData?.fields.find((f) => f.id === key)?.units || ''}
-                  </p>
+                  <p key={key}>{key}: {value.toFixed(2)} {prepareViewerData?.fields.find(f => f.id === key)?.units || ''}</p>
                 ))}
               </div>
             )}
@@ -681,24 +611,14 @@ export default function SimulationEditor() {
             </div>
             <div className="grid gap-2">
               <Label htmlFor="description">Description</Label>
-              <Textarea
-                id="description"
-                name="description"
-                value={formData.description}
-                onChange={handleInputChange}
-                placeholder="Description de la simulation..."
-                rows={3}
-              />
+              <Textarea id="description" name="description" value={formData.description} onChange={handleInputChange} placeholder="Description de la simulation..." rows={3} />
             </div>
 
             <Separator />
 
             <div className="grid gap-2">
               <Label>Type de Géométrie</Label>
-              <Select
-                value={formData.geometryType}
-                onValueChange={(value: 'simple' | 'complex') => handleSelectChange('geometryType', value)}
-              >
+              <Select value={formData.geometryType} onValueChange={(value: 'simple' | 'complex') => handleSelectChange('geometryType', value)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Sélectionner le type de géométrie" />
                 </SelectTrigger>
@@ -713,48 +633,23 @@ export default function SimulationEditor() {
               <div className="grid grid-cols-3 gap-4">
                 <div className="grid gap-2">
                   <Label htmlFor="width">Largeur (mm)</Label>
-                  <Input
-                    id="width"
-                    type="number"
-                    value={formData.geometryConfig.dimensions.width}
-                    onChange={(e) => handleGeometryDimensionChange('width', e.target.value)}
-                  />
+                  <Input id="width" type="number" value={formData.geometryConfig.dimensions.width} onChange={(e) => handleGeometryDimensionChange('width', e.target.value)} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="height">Hauteur (mm)</Label>
-                  <Input
-                    id="height"
-                    type="number"
-                    value={formData.geometryConfig.dimensions.height}
-                    onChange={(e) => handleGeometryDimensionChange('height', e.target.value)}
-                  />
+                  <Input id="height" type="number" value={formData.geometryConfig.dimensions.height} onChange={(e) => handleGeometryDimensionChange('height', e.target.value)} />
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="depth">Profondeur (mm)</Label>
-                  <Input
-                    id="depth"
-                    type="number"
-                    value={formData.geometryConfig.dimensions.depth}
-                    onChange={(e) => handleGeometryDimensionChange('depth', e.target.value)}
-                  />
+                  <Input id="depth" type="number" value={formData.geometryConfig.dimensions.depth} onChange={(e) => handleGeometryDimensionChange('depth', e.target.value)} />
                 </div>
               </div>
             ) : (
               <div className="grid gap-2">
                 <Label htmlFor="geometryFile">Fichier de Géométrie 3D</Label>
                 <div className="flex items-center space-x-2">
-                  <Input
-                    id="geometryFile"
-                    type="file"
-                    onChange={handleFileUpload}
-                    className="flex-1"
-                    disabled={uploadingFile}
-                  />
-                  <Button
-                    type="button"
-                    onClick={() => document.getElementById('geometryFile')?.click()}
-                    disabled={uploadingFile}
-                  >
+                  <Input id="geometryFile" type="file" onChange={handleFileUpload} className="flex-1" disabled={uploadingFile} />
+                  <Button type="button" onClick={() => document.getElementById('geometryFile')?.click()} disabled={uploadingFile}>
                     {uploadingFile ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}
                     Choisir un fichier
                   </Button>
@@ -777,8 +672,7 @@ export default function SimulationEditor() {
                   <div className="flex items-center justify-between text-sm text-muted-foreground mt-2">
                     <span>
                       <CheckCircle className="inline h-4 w-4 text-green-500 mr-1" />
-                      {formData.geometryConfig.file_name} (
-                      {(formData.geometryConfig.file_size / 1024 / 1024).toFixed(2)} MB)
+                      {formData.geometryConfig.file_name} ({(formData.geometryConfig.file_size / 1024 / 1024).toFixed(2)} MB)
                     </span>
                   </div>
                 )}
@@ -815,10 +709,7 @@ export default function SimulationEditor() {
 
             <div className="grid gap-2">
               <Label>Densité de maillage</Label>
-              <Select
-                value={formData.meshDensity}
-                onValueChange={(value: 'low' | 'medium' | 'high') => handleSelectChange('meshDensity', value)}
-              >
+              <Select value={formData.meshDensity} onValueChange={(value: 'low' | 'medium' | 'high') => handleSelectChange('meshDensity', value)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Sélectionner la densité" />
                 </SelectTrigger>
@@ -848,34 +739,17 @@ export default function SimulationEditor() {
             <div className="grid grid-cols-2 gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="initialTemp">Température initiale (°C)</Label>
-                <Input
-                  id="initialTemp"
-                  name="initialTemp"
-                  value={formData.initialTemp}
-                  onChange={handleInputChange}
-                  type="number"
-                />
+                <Input id="initialTemp" name="initialTemp" value={formData.initialTemp} onChange={handleInputChange} type="number" />
               </div>
               <div className="grid gap-2">
                 <Label htmlFor="ambientTemp">Température ambiante (°C)</Label>
-                <Input
-                  id="ambientTemp"
-                  name="ambientTemp"
-                  value={formData.ambientTemp}
-                  onChange={handleInputChange}
-                  type="number"
-                />
+                <Input id="ambientTemp" name="ambientTemp" value={formData.ambientTemp} onChange={handleInputChange} type="number" />
               </div>
             </div>
 
             <div className="grid gap-2">
               <Label>Type de refroidissement</Label>
-              <Select
-                value={formData.coolingType}
-                onValueChange={(value: 'natural_convection' | 'forced_convection' | 'radiation') =>
-                  handleSelectChange('coolingType', value)
-                }
-              >
+              <Select value={formData.coolingType} onValueChange={(value: 'natural_convection' | 'forced_convection' | 'radiation') => handleSelectChange('coolingType', value)}>
                 <SelectTrigger>
                   <SelectValue placeholder="Sélectionner le type" />
                 </SelectTrigger>
@@ -901,15 +775,17 @@ export default function SimulationEditor() {
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">
-                {formData.solverType === 'fem_fortran' && 'Solveur Fortran optimisé pour les géométries 1D/2D'}
-                {formData.solverType === 'openfoam' && 'Solveur CFD pour les géométries 3D complexes'}
+                {formData.solverType === 'fem_fortran' && "Solveur Fortran optimisé pour les géométries 1D/2D"}
+                {formData.solverType === 'openfoam' && "Solveur CFD pour les géométries 3D complexes"}
               </p>
             </div>
 
             {simulation?.status === 'failed' && simulation?.error_message && (
               <Alert variant="destructive">
                 <AlertCircle className="h-4 w-4" />
-                <AlertDescription>La simulation a échoué: {simulation.error_message}</AlertDescription>
+                <AlertDescription>
+                  La simulation a échoué: {simulation.error_message}
+                </AlertDescription>
               </Alert>
             )}
           </CardContent>
