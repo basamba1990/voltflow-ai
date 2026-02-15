@@ -1,558 +1,920 @@
-import { supabase } from '@/lib/supabase';
-import type { Database } from '@/lib/database.types';
+// src/pages/SimulationEditor.tsx - VERSION FINALE CORRIGÉE
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useParams, useLocation } from 'wouter';
+import { toast } from 'sonner';
 
-// -----------------------------------------------------------------------------
-// TYPES
-// -----------------------------------------------------------------------------
-export type Simulation = Database['public']['Tables']['simulations']['Row'] & {
-  simulation_results?: Database['public']['Tables']['simulation_results']['Row'][];
-  materials?: Database['public']['Tables']['materials']['Row'];
-};
+// Imports Lucide-React valides
+import {
+  Save,
+  Play,
+  Download,
+  Trash2,
+  Loader2,
+  AlertCircle,
+  ChevronLeft,
+  FileUp,
+  CheckCircle,
+  Box,
+  Settings,
+  Grid3x3,
+  Maximize2,
+  Minimize2,
+  Square,
+  BarChart3,
+} from 'lucide-react';
 
-export type SimulationStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
-export type MeshDensity = 'low' | 'medium' | 'high';
-export type CoolingType = 'natural_convection' | 'forced_convection' | 'radiation';
-export type FluidType = 'air' | 'water' | 'oil';
+// Services et hooks
+import SimulationService from '@/services/simulation.service';
+import { useSimulation } from '@/hooks/useSimulation';
+import { useMaterials } from '@/hooks/useMaterials';
+import { useAuth } from '@/contexts/AuthContext';
 
-export interface SimulationConfig {
-  geometry_config: {
-    type: string;
-    file_url?: string;
-    file_name?: string;
-    file_path?: string;
-    file_size?: number;
-    dimensions?: Record<string, number>;
-    geometry_type?: string;
-    solver_suggestion?: string;
-    fortran_compatible?: boolean;
-  };
-  boundary_conditions: {
-    initial_temp: number;
-    ambient_temp: number;
-    cooling_type: CoolingType;
-    convection_coeff: number;
-    fluid_type: FluidType;
-    fluid_velocity: number;
-  };
-  material_id: string;
-  mesh_density: MeshDensity;
-  solver_type?: string;
-  material_properties?: {
-    conductivity: number;
-    density: number;
-    specific_heat: number;
-  };
-}
+// Composants UI
+import { SimulationStatus } from '@/components/SimulationStatus';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Textarea } from '@/components/ui/textarea';
+import VTKViewer from '@/components/Viewers/VTKViewer';
+import type { IndustrialField, IndustrialConfig, IndustrialLegend, UnitSystem } from '@/components/Viewers/VTKViewer';
 
-export interface StartSimulationResponse {
-  success: boolean;
-  simulation_id: string;
-  status: SimulationStatus;
-  results?: any;
-  message?: string;
-}
-
-export interface UploadGeometryResponse {
-  success: boolean;
-  fileUrl: string;
-  fileName: string;
-  fileSize?: number;
-  path?: string;
-  geometry_type?: string;
-  solver_suggestion?: string;
-  estimated_dimensions?: { width: number; height: number; depth: number };
-  message?: string;
-}
-
-// -----------------------------------------------------------------------------
-// UTILS
-// -----------------------------------------------------------------------------
-
-const withTimeout = <T>(promise: Promise<T>, ms: number, errorMessage: string): Promise<T> => {
-  const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(errorMessage)), ms);
+export default function SimulationEditor() {
+  const [, setLocation] = useLocation();
+  const { id } = useParams<{ id: string }>();
+  const { simulation, results, isRunning, progress, startSimulation: startSimulationHook, refresh } = useSimulation(id || '', {
+    realtime: true,
   });
-  return Promise.race([promise, timeout]);
-};
 
-// -----------------------------------------------------------------------------
-// FONCTIONS EXPORTÉES
-// -----------------------------------------------------------------------------
+  const { data: materialsDataRaw } = useMaterials();
+  const { user } = useAuth();
+  const materialsData = Array.isArray(materialsDataRaw) ? materialsDataRaw : [];
 
-export const getSimulations = async (): Promise<Simulation[]> => {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
+  // État du formulaire enrichi avec nx, ny, nz
+  const [formData, setFormData] = useState({
+    name: '',
+    description: '',
+    geometryType: 'complex' as 'simple' | 'complex',
+    geometryConfig: {
+      file_url: '',
+      file_name: '',
+      file_size: 0,
+      file_path: '',
+      dimensions: { width: 100, height: 100, depth: 100 },
+    },
+    materialId: '',
+    meshDensity: 'medium' as 'low' | 'medium' | 'high',
+    nx: 50,
+    ny: 50,
+    nz: 50,
+    initialTemp: '1000',
+    ambientTemp: '25',
+    coolingType: 'natural_convection' as 'natural_convection' | 'forced_convection' | 'radiation',
+    convectionCoeff: '10',
+    fluidType: 'air' as 'air' | 'water' | 'oil',
+    fluidVelocity: '1',
+    solverType: 'fem_fortran' as
+      | 'fem_fortran'
+      | 'openfoam'
+      | 'ansys'
+      | 'comsol'
+      | 'abaqus'
+      | 'starccm'
+      | 'fluent'
+      | 'cfx'
+      | 'pinn'
+      | 'custom',
+  });
 
-    const userId = session.session.user.id;
+  // État de la vue
+  const [viewState, setViewState] = useState({
+    isFullscreen: false,
+    showGrid: true,
+    showAxes: true,
+    viewMode: 'volume' as 'volume' | 'slice' | 'wireframe' | 'point_cloud',
+    colorMap: 'heat' as 'heat' | 'coolwarm' | 'rainbow' | 'viridis',
+    opacity: 0.8,
+  });
 
-    const { data, error } = await supabase
-      .from('simulations')
-      .select('*, simulation_results (*), materials (*)')
-      .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+  const [isSaving, setIsSaving] = useState(false);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'finalizing'>('idle');
+  const [selectedPoint, setSelectedPoint] = useState<{
+    position: [number, number, number];
+    field_values: Record<string, number>;
+    element_id?: number;
+  } | null>(null);
 
-    if (error) {
-      throw error;
-    }
+  const uploadTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    return data as Simulation[];
-  } catch (err) {
-    console.error('Erreur récupération simulations:', err);
-    throw err;
-  }
-};
-
-export const getSimulationById = async (id: string): Promise<Simulation> => {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    const { data, error } = await supabase
-      .from('simulations')
-      .select('*, simulation_results (*), materials (*)')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    return data as Simulation;
-  } catch (err) {
-    console.error(`Erreur récupération simulation ${id}:`, err);
-    throw err;
-  }
-};
-
-export const createSimulation = async (params: {
-  name: string;
-  description?: string;
-  geometryType: string;
-  config: SimulationConfig
-}): Promise<Simulation> => {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    const { data, error } = await supabase
-      .from('simulations')
-      .insert({
-        user_id: userId,
-        name: params.name,
-        description: params.description,
-        geometry_type: params.geometryType,
-        geometry_config: params.config.geometry_config,
-        boundary_conditions: params.config.boundary_conditions as any,
-        material_id: params.config.material_id,
-        mesh_density: params.config.mesh_density,
-        solver_type: params.config.solver_type || 'fem_fortran',
-        status: 'pending',
-        progress: 0
-      })
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    return data;
-  } catch (err) {
-    console.error('Erreur création simulation:', err);
-    throw err;
-  }
-};
-
-export const updateSimulation = async (id: string, params: {
-  name: string;
-  description?: string;
-  geometryType: string;
-  config: SimulationConfig
-}): Promise<Simulation> => {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    // Vérifier que la simulation appartient à l'utilisateur
-    const { data: existingSim, error: checkError } = await supabase
-      .from('simulations')
-      .select('id')
-      .eq('id', id)
-      .eq('user_id', userId)
-      .single();
-
-    if (checkError || !existingSim) {
-      throw new Error('Simulation non trouvée ou accès non autorisé');
-    }
-
-    const { data, error } = await supabase
-      .from('simulations')
-      .update({
-        name: params.name,
-        description: params.description,
-        geometry_type: params.geometryType,
-        geometry_config: params.config.geometry_config,
-        boundary_conditions: params.config.boundary_conditions as any,
-        material_id: params.config.material_id,
-        mesh_density: params.config.mesh_density,
-        solver_type: params.config.solver_type || 'fem_fortran',
-        updated_at: new Date().toISOString()
-      })
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    return data;
-  } catch (err) {
-    console.error(`Erreur mise à jour simulation ${id}:`, err);
-    throw err;
-  }
-};
-
-export const startSimulation = async (simulationId: string): Promise<StartSimulationResponse> => {
-  try {
-    console.log(`🚀 [startSimulation] Démarrage simulation ${simulationId}`);
-    
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    // 1. RÉCUPÉRER SIMULATION AVEC MATÉRIAU
-    const { data: simulation, error: fetchError } = await supabase
-      .from('simulations')
-      .select('*, materials(*)')
-      .eq('id', simulationId)
-      .eq('user_id', userId)
-      .single();
-
-    if (fetchError || !simulation) {
-      console.error('❌ Simulation non trouvée:', fetchError);
-      throw new Error('Simulation non trouvée ou accès non autorisé');
-    }
-
-    // 2. VÉRIFIER STATUT
-    if (simulation.status === 'running') {
-      throw new Error('La simulation est déjà en cours');
-    }
-    if (simulation.status === 'completed') {
-      throw new Error('La simulation est déjà terminée');
-    }
-
-    // 3. PRÉPARER CONFIGURATION
-    const materialData = simulation.materials || {
-      thermal_conductivity: 50.0,
-      density: 2700.0,
-      specific_heat: 900.0
-    };
-
-    const config = {
-      geometry_config: simulation.geometry_config || {},
-      boundary_conditions: simulation.boundary_conditions || {
-        initial_temp: 1000,
-        ambient_temp: 25,
-        cooling_type: 'natural_convection',
-        convection_coeff: 10,
-        fluid_type: 'air',
-        fluid_velocity: 1
-      },
-      material_id: simulation.material_id || 'aluminum-6061',
-      mesh_density: simulation.mesh_density || 'medium',
-      solver_type: simulation.solver_type || 'fem_fortran',
-      material_properties: {
-        conductivity: materialData.thermal_conductivity || 50.0,
-        density: materialData.density || 2700.0,
-        specific_heat: materialData.specific_heat || 900.0
+  // Nettoyage des timeouts
+  useEffect(() => {
+    return () => {
+      if (uploadTimeoutRef.current) {
+        clearTimeout(uploadTimeoutRef.current);
       }
     };
+  }, []);
 
-    // 4. Mise à jour minimale avant l’Edge
-await supabase.from('simulations').update({
-  progress: 10,
-  started_at: new Date().toISOString(),
-  updated_at: new Date().toISOString()
-}).eq('id', simulationId);
-
-    // 5. APPEL EDGE FUNCTION
-    try {
-      const { data: edgeFunctionData, error: edgeFunctionError } = await withTimeout(
-        supabase.functions.invoke('simulate', {
-          body: { simulation_id: simulationId, config, user_id: userId }
-        }),
-        120000,
-        '❌ Timeout Edge Function (120s)'
-      );
-
-      if (edgeFunctionError) throw edgeFunctionError;
-
-      if (!edgeFunctionData?.success) {
-        throw new Error(edgeFunctionData?.error || 'Erreur inconnue lors de l\'exécution');
-      }
-
-      return {
-        success: true,
-        simulation_id: simulationId,
-        status: edgeFunctionData.status || 'running',
-        results: edgeFunctionData.results,
-        message: edgeFunctionData.message || 'Simulation lancée avec succès'
-      };
-
-    } catch (invokeError: any) {
-      await supabase.from('simulations').update({
-        status: 'failed',
-        error_message: invokeError.message.substring(0, 500),
-        completed_at: new Date().toISOString()
-      }).eq('id', simulationId);
-      throw invokeError;
+  // Détection du type de géométrie depuis le nom du fichier
+  const detectGeometryType = (fileName: string): '1d_rod' | '2d_plate' | '3d_complex' => {
+    const lowerName = fileName.toLowerCase();
+    if (lowerName.includes('rod') || lowerName.includes('1d') || lowerName.includes('bar')) {
+      return '1d_rod';
+    } else if (lowerName.includes('plate') || lowerName.includes('2d') || lowerName.includes('sheet')) {
+      return '2d_plate';
+    } else {
+      return '3d_complex';
     }
-  } catch (error: any) {
-    console.error('💥 Erreur critique dans startSimulation:', error);
-    throw error;
-  }
-};
+  };
 
-// 🔥 CORRECTION CRITIQUE: Le chemin doit commencer par l'ID utilisateur pour la RLS
-export const uploadGeometry = async (params: {
-  file: File;
-  simulationId: string;
-}): Promise<UploadGeometryResponse> => {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
+  // Ajustement automatique de nx, ny, nz en fonction du type et de la densité
+  const getMeshDimensions = useCallback((geometryType: string, density: string) => {
+    const base = density === 'low' ? 30 : density === 'medium' ? 60 : 100;
+    if (geometryType === '1d_rod') {
+      return { nx: base, ny: 5, nz: 5 };
+    } else if (geometryType === '2d_plate') {
+      return { nx: base, ny: base, nz: 5 };
+    } else {
+      return { nx: base, ny: base, nz: base };
+    }
+  }, []);
+
+  // Icône selon le type
+  const getGeometryIcon = (geometryType: string) => {
+    switch (geometryType) {
+      case '1d_rod':
+        return BarChart3;
+      case '2d_plate':
+        return Square;
+      case '3d_complex':
+        return Box;
+      default:
+        return Box;
+    }
+  };
+
+  // Initialisation des données depuis la simulation existante
+  useEffect(() => {
+    if (id && simulation) {
+      const bc = simulation.boundary_conditions as any;
+      const gc = simulation.geometry_config as any;
+
+      setFormData((prev) => ({
+        ...prev,
+        name: simulation.name || '',
+        description: simulation.description || '',
+        geometryType: simulation.geometry_type || 'complex',
+        geometryConfig: {
+          file_url: gc?.file_url || '',
+          file_name: gc?.file_name || '',
+          file_size: gc?.file_size || 0,
+          file_path: gc?.file_path || '',
+          dimensions: gc?.dimensions || { width: 100, height: 100, depth: 100 },
+        },
+        materialId: simulation.material_id || '',
+        meshDensity: simulation.mesh_density || 'medium',
+        nx: simulation.nx || 50,
+        ny: simulation.ny || 50,
+        nz: simulation.nz || 50,
+        initialTemp: bc?.initial_temp?.toString() || '1000',
+        ambientTemp: bc?.ambient_temp?.toString() || '25',
+        coolingType: bc?.cooling_type || 'natural_convection',
+        convectionCoeff: bc?.convection_coeff?.toString() || '10',
+        fluidType: bc?.fluid_type || 'air',
+        fluidVelocity: bc?.fluid_velocity?.toString() || '1',
+        solverType: simulation.solver_type || 'fem_fortran',
+      }));
+    }
+  }, [id, simulation]);
+
+  // Mise à jour automatique de nx, ny, nz quand meshDensity ou geometryType change
+  useEffect(() => {
+    const geometryType =
+      formData.geometryType === 'complex'
+        ? '3d_complex'
+        : formData.geometryConfig.file_name
+        ? detectGeometryType(formData.geometryConfig.file_name)
+        : '3d_complex';
+    const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
+    setFormData((prev) => ({ ...prev, nx, ny, nz }));
+  }, [formData.meshDensity, formData.geometryType, formData.geometryConfig.file_name, getMeshDimensions]);
+
+  // Préparation des données pour le viewer
+  const prepareViewerData = useMemo(() => {
+    if (!results) return null;
+
+    const fields: IndustrialField[] = [];
+    if (results.temperature_field && results.temperature_field.values) {
+      const tempValues = results.temperature_field.values;
+      const tempArray = Array.isArray(tempValues) ? tempValues : Object.values(tempValues);
+
+      fields.push({
+        id: 'temperature',
+        name: 'Temperature',
+        type: 'temperature',
+        values: new Float32Array(tempArray),
+        units: '°C',
+        min: Math.min(...tempArray),
+        max: Math.max(...tempArray),
+        timestamp: simulation?.created_at || new Date().toISOString(),
+        material: formData.materialId
+          ? (materialsData.find((m) => m.id === formData.materialId)?.name.toLowerCase() as any)
+          : 'steel',
+        thermal_conductivity: materialsData.find((m) => m.id === formData.materialId)?.conductivity || 50,
+      });
     }
 
-    const userId = session.session.user.id;
-    const { file, simulationId } = params;
+    const config: Partial<IndustrialConfig> = {
+      max_memory_mb: 2048,
+      target_fps: 60,
+      lod_enabled: true,
+      default_view: 'isometric',
+      lighting: 'engineering',
+      background: 'dark',
+      unit_system: 'si' as UnitSystem,
+      precision: 2,
+      annotations: true,
+    };
 
-    // 1. GÉNÉRATION CHEMIN RLS COMPATIBLE
-    const timestamp = Date.now();
-    const uniqueId = Math.random().toString(36).substring(2, 9);
-    const fileExt = file.name.split('.').pop()?.toLowerCase() || 'vtp';
-    const storagePath = `${userId}/${timestamp}_${uniqueId}.${fileExt}`;
-
-    console.log('📤 Upload vers simulation-files - Chemin:', storagePath);
-
-    // 2. UPLOAD STORAGE AVEC TIMEOUT
-    const { error: uploadError } = await withTimeout(
-      supabase.storage.from('simulation-files').upload(storagePath, file, {
-        cacheControl: '3600',
-        upsert: false,
-        contentType: 'application/octet-stream'
-      }),
-      30000,
-      '❌ Supabase Storage upload timeout (30s)'
-    );
-
-    if (uploadError) throw uploadError;
-
-    // 3. APPEL EDGE FUNCTION POUR TRAITEMENT
-    const arrayBuffer = await file.arrayBuffer();
-    const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-
-    const { data: edgeFunctionData, error: edgeFunctionError } = await supabase.functions.invoke('upload-geometry', {
-      body: {
-        fileName: file.name,
-        fileData: base64String,
-        userId: userId,
-        simulation_id: simulationId,
-        path: storagePath
+    const legend: IndustrialLegend = {
+      type: 'scientific',
+      min: fields[0]?.min || 0,
+      max: fields[0]?.max || 100,
+      num_ticks: 7,
+      format: '0.0',
+      units: '°C',
+      color_map: viewState.colorMap,
+      show_gradient: true,
+      show_values: true,
+      show_units: true,
+      safety_thresholds: {
+        critical: 800,
+        warning: 500,
+        safe: 200,
       },
-    });
-
-    if (edgeFunctionError) throw edgeFunctionError;
+    };
 
     return {
-      success: true,
-      fileUrl: edgeFunctionData.fileUrl,
-      fileName: edgeFunctionData.fileName,
-      fileSize: edgeFunctionData.fileSize,
-      path: storagePath,
-      geometry_type: edgeFunctionData.geometry_type,
-      solver_suggestion: edgeFunctionData.solver_suggestion,
-      estimated_dimensions: edgeFunctionData.estimated_dimensions,
-      message: edgeFunctionData.message
-    };
-
-  } catch (error: any) {
-    console.error('❌ Erreur upload géométrie:', error);
-    throw error;
-  }
-};
-
-export const deleteSimulation = async (id: string): Promise<void> => {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    const { error } = await supabase
-      .from('simulations')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', userId);
-
-    if (error) {
-      throw error;
-    }
-  } catch (err) {
-    console.error(`Erreur suppression simulation ${id}:`, err);
-    throw err;
-  }
-};
-
-export const subscribeToSimulation = (id: string, callback: (payload: any) => void) => {
-  return supabase.channel(`sim-${id}`)
-    .on('postgres_changes', { 
-      event: '*', 
-      schema: 'public', 
-      table: 'simulations', 
-      filter: `id=eq.${id}` 
-    }, callback)
-    .subscribe();
-};
-
-export const unsubscribeFromChannel = (channel: any) => {
-  if (channel) {
-    supabase.removeChannel(channel);
-  }
-};
-
-export async function updateSimulationStatus(
-  simulationId: string, 
-  status: SimulationStatus,
-  errorMessage?: string
-): Promise<Simulation> {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    const updateData: any = {
-      status,
-      updated_at: new Date().toISOString()
-    };
-
-    if (status === 'completed' || status === 'failed') {
-      updateData.completed_at = new Date().toISOString();
-    }
-
-    if (errorMessage && status === 'failed') {
-      updateData.error_message = errorMessage.substring(0, 500);
-    }
-
-    const { data, error } = await supabase
-      .from('simulations')
-      .update(updateData)
-      .eq('id', simulationId)
-      .eq('user_id', userId)
-      .select()
-      .single();
-
-    if (error) {
-      throw error;
-    }
-
-    return data;
-  } catch (err) {
-    console.error(`Erreur mise à jour statut simulation ${simulationId}:`, err);
-    throw err;
-  }
-}
-
-export async function getUserSimulationStats() {
-  try {
-    const { data: session, error: authError } = await supabase.auth.getSession();
-    if (authError || !session?.session?.user?.id) {
-      throw new Error('Utilisateur non authentifié');
-    }
-
-    const userId = session.session.user.id;
-
-    const { data, error } = await supabase
-      .from('simulations')
-      .select('status, solver_type, mesh_density')
-      .eq('user_id', userId);
-
-    if (error) {
-      throw error;
-    }
-
-    const stats = {
-      totalSimulations: data.length,
-      byStatus: {
-        pending: 0,
-        running: 0,
-        completed: 0,
-        failed: 0,
-        cancelled: 0,
+      mesh: {
+        url: results.vtk_file_url || results.geometry_url || '',
+        type: results.vtk_file_url?.endsWith('.vtp') ? 'vtp' : results.vtk_file_url?.endsWith('.stl') ? 'stl' : 'vtp',
+        metadata: results.mesh_metadata,
       },
-      bySolverType: {} as Record<string, number>,
-      byMeshDensity: {
-        low: 0,
-        medium: 0,
-        high: 0,
-      },
+      fields,
+      config,
+      legend,
+      simulation: simulation
+        ? {
+            engine: simulation.solver_type || 'fem_fortran',
+            case_name: simulation.name,
+            version: '1.0',
+            timestamp: simulation.created_at || new Date().toISOString(),
+          }
+        : undefined,
     };
+  }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
-    data.forEach((simulation) => {
-      if (stats.byStatus[simulation.status as keyof typeof stats.byStatus] !== undefined) {
-        stats.byStatus[simulation.status as keyof typeof stats.byStatus]++;
-      }
-      const solver = simulation.solver_type || 'unknown';
-      stats.bySolverType[solver] = (stats.bySolverType[solver] || 0) + 1;
-      if (simulation.mesh_density && stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity] !== undefined) {
-        stats.byMeshDensity[simulation.mesh_density as keyof typeof stats.byMeshDensity]++;
-      }
-    });
+  // Gestion de l'upload de fichier - version robuste avec création auto si besoin
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setUploadingFile(true);
+    setUploadError(null);
+    setUploadProgress(0);
+    setUploadPhase('uploading');
 
-    return stats;
-  } catch (err) {
-    console.error('Erreur lors de la récupération des statistiques:', err);
-    throw err;
-  }
+    if (uploadTimeoutRef.current) {
+      clearTimeout(uploadTimeoutRef.current);
+      uploadTimeoutRef.current = null;
+    }
+
+    const file = e.target.files?.[0];
+    if (!file) {
+      setUploadingFile(false);
+      toast.error('Aucun fichier sélectionné');
+      return;
+    }
+
+    // Validation extension
+    const validExtensions = ['.stl', '.step', '.stp', '.obj', '.vtp', '.vti', '.ply', '.vtk', '.iges', '.igs', '.vtu'];
+    const fileExt = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+    if (!validExtensions.includes(fileExt)) {
+      setUploadingFile(false);
+      toast.error(`Extension non supportée: ${fileExt}. Formats: ${validExtensions.join(', ')}`);
+      return;
+    }
+
+    // Validation taille
+    const maxSize = 50 * 1024 * 1024;
+    if (file.size > maxSize) {
+      setUploadingFile(false);
+      toast.error(`Fichier trop volumineux (${(file.size / 1024 / 1024).toFixed(1)}MB). Max: 50MB`);
+      return;
+    }
+
+    // Si pas d'ID, on va en créer une automatiquement
+    const effectiveSimId = id || 'new';
+    let newSimId: string | undefined;
+
+    try {
+      console.log('🚀 Début upload:', file.name);
+
+      const progressInterval = setInterval(() => {
+        setUploadProgress((prev) => {
+          if (prev < 80) {
+            return Math.min(prev + 5, 80);
+          } else {
+            if (uploadPhase !== 'finalizing') {
+              setUploadPhase('finalizing');
+            }
+            return Math.min(prev + 2, 95);
+          }
+        });
+      }, 500);
+
+      // Appel du service avec création auto si nécessaire
+      const result = await SimulationService.uploadGeometry({
+        file,
+        simulationId: id || undefined,
+        simulationName: formData.name || file.name.replace(/\.[^/.]+$/, ''),
+        materialId: formData.materialId || undefined,
+      });
+
+      clearInterval(progressInterval);
+      setUploadPhase('idle');
+      setUploadProgress(100);
+
+      console.log('✅ Upload réussi:', result);
+      newSimId = result.simulationId;
+
+      const geometryType = result.geometry_type || detectGeometryType(result.fileName);
+      const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
+
+      setFormData((prev) => ({
+        ...prev,
+        geometryType: geometryType === '1d_rod' ? 'simple' : 'complex',
+        nx,
+        ny,
+        nz,
+        geometryConfig: {
+          ...prev.geometryConfig,
+          file_url: result.fileUrl,
+          file_name: result.fileName,
+          file_size: result.fileSize || 0,
+          file_path: result.path || '',
+        },
+      }));
+
+      toast.success(
+        <div className="flex items-start space-x-2">
+          {React.createElement(getGeometryIcon(geometryType), { className: 'h-5 w-5 mt-0.5 text-blue-500' })}
+          <div>
+            <p className="font-medium">Géométrie uploadée avec succès</p>
+            <p className="text-sm text-gray-600">
+              Type détecté: <Badge variant="outline">{geometryType}</Badge>
+            </p>
+          </div>
+        </div>
+      );
+
+      // Si c'était une nouvelle simulation, rediriger vers l'ID créé
+      if (!id && newSimId) {
+        setLocation(`/simulation/${newSimId}`);
+      } else {
+        refresh();
+      }
+
+      // Lancement automatique (optionnel, peut être retiré si préféré)
+      const simIdToStart = newSimId || id;
+      if (simIdToStart) {
+        console.log('🚀 Lancement automatique de la simulation...');
+        try {
+          await startSimulationHook(simIdToStart);
+          toast.success('Simulation lancée automatiquement !');
+        } catch (simError: any) {
+          console.error('❌ Erreur lancement automatique:', simError);
+          toast.error(`Upload réussi mais échec du lancement: ${simError.message}`);
+        }
+      }
+    } catch (error: any) {
+      setUploadingFile(false);
+      setUploadPhase('idle');
+      setUploadProgress(0);
+      const errorMessage = error.message || 'Une erreur inconnue est survenue lors de l\'upload.';
+      setUploadError(errorMessage);
+      toast.error(`Échec de l'upload: ${errorMessage}`);
+      console.error('❌ Erreur handleFileUpload:', error);
+    }
+  };
+
+  // Sauvegarde de la simulation avec la structure correcte (config)
+  const handleSaveSimulation = useCallback(async () => {
+    if (!user?.id) {
+      toast.error('Vous devez être connecté pour sauvegarder une simulation.');
+      return;
+    }
+
+    setIsSaving(true);
+    try {
+      const simulationData = {
+        name: formData.name,
+        description: formData.description,
+        geometry_type: formData.geometryType,
+        config: {
+          geometry_config: {
+            ...formData.geometryConfig,
+            nx: formData.nx,
+            ny: formData.ny,
+            nz: formData.nz,
+          },
+          boundary_conditions: {
+            initial_temp: parseFloat(formData.initialTemp),
+            ambient_temp: parseFloat(formData.ambientTemp),
+            cooling_type: formData.coolingType,
+            convection_coeff: parseFloat(formData.convectionCoeff),
+            fluid_type: formData.fluidType,
+            fluid_velocity: parseFloat(formData.fluidVelocity),
+          },
+          material_id: formData.materialId,
+          mesh_density: formData.meshDensity,
+          solver_type: formData.solverType,
+        },
+      };
+
+      let savedSimulation;
+      if (id) {
+        savedSimulation = await SimulationService.updateSimulation(id, simulationData);
+        toast.success('Simulation mise à jour avec succès !');
+      } else {
+        savedSimulation = await SimulationService.createSimulation(simulationData);
+        toast.success('Simulation créée avec succès !');
+        setLocation(`/simulation/${savedSimulation.id}`);
+      }
+      refresh();
+    } catch (error: any) {
+      console.error('Erreur sauvegarde simulation:', error);
+      toast.error(`Échec de la sauvegarde: ${error.message}`);
+    } finally {
+      setIsSaving(false);
+    }
+  }, [formData, id, user, setLocation, refresh]);
+
+  const handleStartSimulation = useCallback(async () => {
+    if (!id) {
+      toast.error('Veuillez sauvegarder la simulation avant de la lancer.');
+      return;
+    }
+    if (!user?.id) {
+      toast.error('Vous devez être connecté pour lancer une simulation.');
+      return;
+    }
+    if (isRunning) {
+      toast.info('La simulation est déjà en cours.');
+      return;
+    }
+
+    try {
+      await startSimulationHook(id);
+      toast.success('Simulation lancée avec succès !');
+      setTimeout(() => refresh(), 2000);
+    } catch (error: any) {
+      console.error('Erreur lancement simulation:', error);
+      toast.error(`Échec du lancement: ${error.message}`);
+    }
+  }, [id, user, isRunning, startSimulationHook, refresh]);
+
+  const handleDeleteSimulation = useCallback(async () => {
+    if (!id) return;
+    if (!confirm('Êtes-vous sûr de vouloir supprimer cette simulation ?')) return;
+
+    try {
+      await SimulationService.deleteSimulation(id);
+      toast.success('Simulation supprimée avec succès !');
+      setLocation('/dashboard');
+    } catch (error: any) {
+      console.error('Erreur suppression simulation:', error);
+      toast.error(`Échec de la suppression: ${error.message}`);
+    }
+  }, [id, setLocation]);
+
+  const handleExportResults = useCallback(async () => {
+    if (!results || !results.vtk_file_url) {
+      toast.error('Aucun résultat VTK à exporter.');
+      return;
+    }
+    setIsExporting(true);
+    try {
+      const response = await fetch(results.vtk_file_url);
+      if (!response.ok) {
+        throw new Error(`Échec du téléchargement du fichier VTK: ${response.statusText}`);
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `simulation_results_${id}.vtk`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success('Résultats exportés avec succès !');
+    } catch (error: any) {
+      console.error('Erreur exportation résultats:', error);
+      toast.error(`Échec de l'exportation: ${error.message}`);
+    } finally {
+      setIsExporting(false);
+    }
+  }, [results, id]);
+
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  }, []);
+
+  const handleSelectChange = useCallback((name: string, value: string) => {
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  }, []);
+
+  const handleGeometryDimensionChange = useCallback((dim: string, value: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      geometryConfig: {
+        ...prev.geometryConfig,
+        dimensions: { ...prev.geometryConfig.dimensions, [dim]: parseFloat(value) || 0 },
+      },
+    }));
+  }, []);
+
+  const currentMaterial = useMemo(() => {
+    return materialsData.find((m) => m.id === formData.materialId);
+  }, [formData.materialId, materialsData]);
+
+  const isFormValid = useMemo(() => {
+    return formData.name.trim() !== '' && formData.materialId.trim() !== '';
+  }, [formData.name, formData.materialId]);
+
+  return (
+    <div className="flex flex-col h-screen bg-background text-foreground">
+      <header className="flex items-center justify-between p-4 border-b bg-card">
+        <div className="flex items-center space-x-4">
+          <Button variant="ghost" size="icon" onClick={() => setLocation('/dashboard')}>
+            <ChevronLeft className="h-5 w-5" />
+          </Button>
+          <h1 className="text-xl font-semibold">{id ? 'Modifier la Simulation' : 'Nouvelle Simulation'}</h1>
+          {simulation && <SimulationStatus status={simulation.status} progress={simulation.progress} />}
+        </div>
+        <div className="flex items-center space-x-2">
+          <Button onClick={handleSaveSimulation} disabled={isSaving || isRunning || !isFormValid}>
+            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+            Sauvegarder
+          </Button>
+          <Button onClick={handleStartSimulation} disabled={isRunning || !id} className="bg-green-600 hover:bg-green-700">
+            {isRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+            Lancer Simulation
+          </Button>
+          <Button onClick={handleExportResults} disabled={!results?.vtk_file_url || isExporting} variant="outline">
+            {isExporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+            Exporter Résultats
+          </Button>
+          {id && (
+            <Button onClick={handleDeleteSimulation} variant="destructive">
+              <Trash2 className="mr-2 h-4 w-4" />
+              Supprimer
+            </Button>
+          )}
+        </div>
+      </header>
+
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden">
+        <Card className="lg:col-span-2 flex flex-col">
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle>Visualisation 3D</CardTitle>
+            <div className="flex items-center space-x-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setViewState((prev) => ({ ...prev, showGrid: !prev.showGrid }))}
+                title="Afficher/Masquer Grille"
+              >
+                {viewState.showGrid ? <Grid3x3 className="h-4 w-4" /> : <Grid3x3 className="h-4 w-4 text-muted-foreground" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setViewState((prev) => ({ ...prev, showAxes: !prev.showAxes }))}
+                title="Afficher/Masquer Axes"
+              >
+                {viewState.showAxes ? <Box className="h-4 w-4" /> : <Box className="h-4 w-4 text-muted-foreground" />}
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setViewState((prev) => ({ ...prev, isFullscreen: !prev.isFullscreen }))}
+                title="Plein écran"
+              >
+                {viewState.isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent className="flex-1 p-0 relative">
+            {prepareViewerData ? (
+              <VTKViewer
+                key={prepareViewerData.mesh.url}
+                data={prepareViewerData}
+                showGrid={viewState.showGrid}
+                showAxes={viewState.showAxes}
+                viewMode={viewState.viewMode}
+                colorMap={viewState.colorMap}
+                opacity={viewState.opacity}
+                onPointSelect={setSelectedPoint}
+              />
+            ) : (
+              <div className="flex items-center justify-center h-full text-muted-foreground">
+                {simulation?.status === 'pending' && <p>En attente de lancement de la simulation...</p>}
+                {simulation?.status === 'running' && (
+                  <div className="text-center">
+                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
+                    <p>Simulation en cours de calcul... {progress ? `${progress}%` : ''}</p>
+                  </div>
+                )}
+                {simulation?.status === 'failed' && <p>La simulation a échoué. Veuillez vérifier les logs.</p>}
+                {simulation?.status === 'completed' && !results && (
+                  <div className="text-center">
+                    <p>Simulation terminée, chargement des résultats...</p>
+                    <Loader2 className="h-6 w-6 animate-spin mx-auto mt-2" />
+                  </div>
+                )}
+                {!simulation && <p>Configurez et lancez une simulation pour visualiser les résultats.</p>}
+              </div>
+            )}
+            {selectedPoint && (
+              <div className="absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm p-3 rounded-lg shadow-lg text-sm">
+                <h4 className="font-semibold mb-1">Détails du point</h4>
+                <p>Position: ({selectedPoint.position.map((c) => c.toFixed(2)).join(', ')})</p>
+                {Object.entries(selectedPoint.field_values).map(([key, value]) => (
+                  <p key={key}>
+                    {key}: {value.toFixed(2)} {prepareViewerData?.fields.find((f) => f.id === key)?.units || ''}
+                  </p>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Settings className="h-5 w-5" />
+              Configuration de la Simulation
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="flex-1 overflow-y-auto space-y-6">
+            <div className="grid gap-2">
+              <Label htmlFor="name">Nom de la simulation</Label>
+              <Input id="name" name="name" value={formData.name} onChange={handleInputChange} placeholder="Ma simulation" />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="description">Description</Label>
+              <Textarea
+                id="description"
+                name="description"
+                value={formData.description}
+                onChange={handleInputChange}
+                placeholder="Description de la simulation..."
+                rows={3}
+              />
+            </div>
+
+            <Separator />
+
+            <div className="grid gap-2">
+              <Label>Type de Géométrie</Label>
+              <Select
+                value={formData.geometryType}
+                onValueChange={(value: 'simple' | 'complex') => handleSelectChange('geometryType', value)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner le type de géométrie" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="simple">Simple (dimensions)</SelectItem>
+                  <SelectItem value="complex">Complexe (fichier 3D)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {formData.geometryType === 'simple' ? (
+              <div className="grid grid-cols-3 gap-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="width">Largeur (mm)</Label>
+                  <Input
+                    id="width"
+                    type="number"
+                    value={formData.geometryConfig.dimensions.width}
+                    onChange={(e) => handleGeometryDimensionChange('width', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="height">Hauteur (mm)</Label>
+                  <Input
+                    id="height"
+                    type="number"
+                    value={formData.geometryConfig.dimensions.height}
+                    onChange={(e) => handleGeometryDimensionChange('height', e.target.value)}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="depth">Profondeur (mm)</Label>
+                  <Input
+                    id="depth"
+                    type="number"
+                    value={formData.geometryConfig.dimensions.depth}
+                    onChange={(e) => handleGeometryDimensionChange('depth', e.target.value)}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-2">
+                <Label htmlFor="geometryFile">Fichier de Géométrie 3D</Label>
+                <div className="flex items-center space-x-2">
+                  <Input
+                    id="geometryFile"
+                    type="file"
+                    onChange={handleFileUpload}
+                    className="flex-1"
+                    disabled={uploadingFile}
+                  />
+                  <Button
+                    type="button"
+                    onClick={() => document.getElementById('geometryFile')?.click()}
+                    disabled={uploadingFile}
+                  >
+                    {uploadingFile ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileUp className="mr-2 h-4 w-4" />}
+                    Choisir un fichier
+                  </Button>
+                </div>
+                {uploadingFile && uploadProgress > 0 && (
+                  <div className="w-full bg-gray-200 rounded-full h-2.5 dark:bg-gray-700 mt-2">
+                    <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${uploadProgress}%` }}></div>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {uploadPhase === 'uploading' ? `Téléchargement en cours: ${uploadProgress}%` : 'Finalisation...'}
+                    </p>
+                  </div>
+                )}
+                {uploadError && (
+                  <Alert variant="destructive" className="mt-2">
+                    <AlertCircle className="h-4 w-4" />
+                    <AlertDescription>{uploadError}</AlertDescription>
+                  </Alert>
+                )}
+                {formData.geometryConfig.file_name && !uploadError && (
+                  <div className="flex items-center justify-between text-sm text-muted-foreground mt-2">
+                    <span>
+                      <CheckCircle className="inline h-4 w-4 text-green-500 mr-1" />
+                      {formData.geometryConfig.file_name} (
+                      {(formData.geometryConfig.file_size / 1024 / 1024).toFixed(2)} MB)
+                    </span>
+                  </div>
+                )}
+                <p className="text-sm text-muted-foreground mt-1">
+                  Formats supportés: STL, STEP, OBJ, VTP, VTI, PLY, VTK, IGES, IGS, VTU
+                </p>
+              </div>
+            )}
+
+            <Separator />
+
+            <div className="grid gap-2">
+              <Label>Matériau</Label>
+              <Select value={formData.materialId} onValueChange={(value) => handleSelectChange('materialId', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner un matériau" />
+                </SelectTrigger>
+                <SelectContent>
+                  {materialsData.map((material) => (
+                    <SelectItem key={material.id} value={material.id}>
+                      {material.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {currentMaterial && (
+                <div className="text-sm text-muted-foreground mt-1">
+                  <p>Conductivité: {currentMaterial.conductivity} W/m·K</p>
+                  <p>Densité: {currentMaterial.density} kg/m³</p>
+                  <p>Chaleur spécifique: {currentMaterial.specific_heat} J/kg·K</p>
+                </div>
+              )}
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Densité de maillage</Label>
+              <Select
+                value={formData.meshDensity}
+                onValueChange={(value: 'low' | 'medium' | 'high') => handleSelectChange('meshDensity', value)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner la densité" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="low">Faible (calcul rapide)</SelectItem>
+                  <SelectItem value="medium">Moyen (équilibre précision/temps)</SelectItem>
+                  <SelectItem value="high">Élevé (haute précision)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="grid gap-1">
+                <Label htmlFor="nx">NX</Label>
+                <Input id="nx" name="nx" type="number" value={formData.nx} onChange={handleInputChange} min={5} max={500} />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="ny">NY</Label>
+                <Input id="ny" name="ny" type="number" value={formData.ny} onChange={handleInputChange} min={5} max={500} />
+              </div>
+              <div className="grid gap-1">
+                <Label htmlFor="nz">NZ</Label>
+                <Input id="nz" name="nz" type="number" value={formData.nz} onChange={handleInputChange} min={5} max={500} />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="initialTemp">Température initiale (°C)</Label>
+                <Input
+                  id="initialTemp"
+                  name="initialTemp"
+                  value={formData.initialTemp}
+                  onChange={handleInputChange}
+                  type="number"
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="ambientTemp">Température ambiante (°C)</Label>
+                <Input
+                  id="ambientTemp"
+                  name="ambientTemp"
+                  value={formData.ambientTemp}
+                  onChange={handleInputChange}
+                  type="number"
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Type de refroidissement</Label>
+              <Select
+                value={formData.coolingType}
+                onValueChange={(value: 'natural_convection' | 'forced_convection' | 'radiation') =>
+                  handleSelectChange('coolingType', value)
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner le type" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="natural_convection">Convection naturelle</SelectItem>
+                  <SelectItem value="forced_convection">Convection forcée</SelectItem>
+                  <SelectItem value="radiation">Radiation</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid gap-2">
+              <Label>Solveur</Label>
+              <Select value={formData.solverType} onValueChange={(value: any) => handleSelectChange('solverType', value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Sélectionner le solveur" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fem_fortran">FEM Fortran (1D/2D/3D)</SelectItem>
+                  <SelectItem value="openfoam">OpenFOAM (3D complexe)</SelectItem>
+                  <SelectItem value="ansys">ANSYS</SelectItem>
+                  <SelectItem value="comsol">COMSOL</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground mt-1">
+                {formData.solverType === 'fem_fortran' && 'Solveur Fortran optimisé pour les géométries 1D/2D'}
+                {formData.solverType === 'openfoam' && 'Solveur CFD pour les géométries 3D complexes'}
+              </p>
+            </div>
+
+            {simulation?.status === 'failed' && simulation?.error_message && (
+              <Alert variant="destructive">
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>La simulation a échoué: {simulation.error_message}</AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      </main>
+    </div>
+  );
 }
-
-export const SimulationService = {
-  getSimulations,
-  getSimulationById,
-  createSimulation,
-  updateSimulation,
-  startSimulation,
-  uploadGeometry,
-  deleteSimulation,
-  subscribeToSimulation,
-  unsubscribeFromChannel,
-  updateSimulationStatus,
-  getUserSimulationStats
-};
-
-export default SimulationService;
