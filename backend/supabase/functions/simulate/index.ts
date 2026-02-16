@@ -33,6 +33,8 @@ Deno.serve(async (req) => {
     await supabase.from("simulations").update({ status: "running", progress: 20 }).eq("id", simId);
 
     const bc = sim.boundary_conditions || {};
+    const gc = sim.geometry_config || {};
+    
     const fortranConfig = {
       conductivity: sim.materials?.thermal_conductivity ?? 50.0,
       density: sim.materials?.density ?? 2700.0,
@@ -44,6 +46,7 @@ Deno.serve(async (req) => {
       ny: sim.ny || 50,
       nz: sim.nz || 50,
       geometry_type: sim.geometry_type,
+      mesh_file: gc.file_url || null, // URL du fichier STL pour la voxelisation
       solver_type: sim.solver_type || "fem_fortran"
     };
 
@@ -62,7 +65,6 @@ Deno.serve(async (req) => {
 
     const result = await response.json();
     
-    // Upload VTK to Supabase Storage if available
     let publicUrl = null;
     if (result.vtk_file_url) {
       const vtkRes = await fetch(`${BACKEND_URL}${result.vtk_file_url}`);
@@ -75,7 +77,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Insert results
     await supabase.from("simulation_results").insert({
       simulation_id: simId,
       user_id: userId,
