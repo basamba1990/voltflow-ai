@@ -51,7 +51,11 @@ Deno.serve(async (req) => {
     };
 
     const BACKEND_URL = Deno.env.get("BACKEND_URL") || "https://voltflow-ai.onrender.com";
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s
+
     const response = await fetch(`${BACKEND_URL}/api/v1/simulate/fortran`, {
+      signal: controller.signal,
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -61,7 +65,13 @@ Deno.serve(async (req) => {
       }),
     });
 
-    if (!response.ok) throw new Error(`Backend error: ${response.status}`);
+    console.log(`📡 Backend response status: ${response.status}`);
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error(`❌ Backend error body: ${errorText}`);
+      throw new Error(`Backend error: ${response.status} - ${errorText}`);
+    }
+    clearTimeout(timeoutId);
 
     const result = await response.json();
     
