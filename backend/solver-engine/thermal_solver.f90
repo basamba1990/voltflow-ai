@@ -1,7 +1,6 @@
 ! ============================================================================
-! THERMAL SOLVER FORTRAN - Version 2.0
-! Solveur thermique industriel 1D/2D/3D
-! Compatible avec l'API Python et l'interface web
+! THERMAL SOLVER FORTRAN - Version 2.5 (VOXEL MASK SUPPORT)
+! Solveur thermique industriel 1D/2D/3D avec support de géométrie complexe
 ! ============================================================================
 
 module precision_mod
@@ -32,6 +31,9 @@ module thermal_solver_nd
         character(len=200) :: mesh_file
         character(len=20) :: geometry_type
         character(len=200) :: output_file
+        logical :: use_mask
+        character(len=200) :: mask_file
+        integer, allocatable :: mask(:,:,:)
     end type SimulationConfig
 
     type :: SimulationResult
@@ -48,8 +50,8 @@ contains
 
 subroutine initialize_solver()
     print *, "========================================"
-    print *, "THERMAL SOLVER ND - Version 2.1"
-    print *, "Solveur thermique industriel 1D/2D/3D"
+    print *, "THERMAL SOLVER ND - Version 2.5"
+    print *, "Support Voxel Mask pour STL"
     print *, "========================================"
 end subroutine initialize_solver
 
@@ -69,6 +71,7 @@ subroutine solve_heat_transfer_nd(cfg, result)
     allocate(Tnew(cfg%nx, cfg%ny, cfg%nz))
     result%T = cfg%initial_temp
     
+    ! Conditions aux limites sur les bords du domaine
     result%T(1,:,:) = cfg%boundary_temp
     result%T(cfg%nx,:,:) = cfg%boundary_temp
     if (cfg%ny > 1) then
@@ -91,6 +94,12 @@ subroutine solve_heat_transfer_nd(cfg, result)
             do j = 1, cfg%ny
                 do i = 1, cfg%nx
                     Tnew(i,j,k) = result%T(i,j,k)
+                    
+                    ! Si on utilise un masque, on ignore les cellules extérieures
+                    if (cfg%use_mask) then
+                        if (cfg%mask(i,j,k) == 0) cycle
+                    end if
+
                     if (i > 1 .and. i < cfg%nx) then
                         laplacian = (result%T(i+1,j,k) - 2._dp*result%T(i,j,k) + result%T(i-1,j,k)) / (dx*dx)
                         if (cfg%ny > 1 .and. j > 1 .and. j < cfg%ny) then
@@ -160,24 +169,12 @@ program thermal_solver
     type(SimulationConfig) :: cfg
     type(SimulationResult) :: res
     character(len=200) :: config_file
-    integer :: io_status
+    integer :: io_status, mask_val
     logical :: file_exists
+    integer :: i, j, k
     
-    ! --- CORRECTIONS ICI ---
-    cfg%conductivity = 50._dp
-    cfg%density = 2700._dp
-    cfg%specific_heat = 900._dp
-    cfg%initial_temp = 1000._dp
-    cfg%boundary_temp = 25._dp
-    cfg%heat_flux = 1000._dp
-    cfg%nx = 100
-    cfg%ny = 1
-    cfg%nz = 1
-    cfg%max_iterations = 5000
-    cfg%dt = 0.1_dp
-    cfg%tolerance = 1.e-6_dp
-    cfg%geometry_type = '1d_rod'
-    cfg%output_file = 'thermal_results.vtk'
+    ! Valeurs par défaut
+    cfg%use_mask = .false.
     
     if (command_argument_count() > 0) then
         call get_command_argument(1, config_file)
@@ -197,14 +194,30 @@ program thermal_solver
                 read(10, *) cfg%tolerance
                 read(10, '(A)') cfg%geometry_type
                 read(10, '(A)') cfg%output_file
+                
+                ! Lecture du masque si présent
+                read(10, *, iostat=io_status) mask_val
+                if (io_status == 0 .and. mask_val == 1) then
+                    cfg%use_mask = .true.
+                    read(10, '(A)') cfg%mask_file
+                    allocate(cfg%mask(cfg%nx, cfg%ny, cfg%nz))
+                    ! Lecture simplifiée du masque (format texte pour robustesse)
+                    open(unit=11, file=trim(cfg%mask_file), status='old', action='read')
+                    do k = 1, cfg%nz
+                        do j = 1, cfg%ny
+                            do i = 1, cfg%nx
+                                read(11, *) cfg%mask(i,j,k)
+                            end do
+                        end do
+                    end do
+                    close(11)
+                end if
                 close(10)
             end if
         end if
     end if
     
     call initialize_solver()
-    if (cfg%nx < 2) cfg%nx = 2
-    
     call solve_heat_transfer_nd(cfg, res)
     call export_to_vtk_nd(res%T, cfg%output_file, cfg%geometry_type)
     
@@ -223,4 +236,5 @@ program thermal_solver
     print *, "}"
     
     call cleanup_solver(res)
-end program thermal_solver                   
+    if (allocated(cfg%mask)) deallocate(cfg%mask)
+end program thermal_solver
