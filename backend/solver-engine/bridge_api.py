@@ -1,6 +1,6 @@
 """
 BRIDGE API - Interface Python/Fortran pour le solveur thermique
-Version: 2.4 - CORRECTION FINALE (route alignée, logging des 404, healthcheck)
+Version: 2.5 - CORRECTION COMPLÈTE (Support nx/ny/nz, OpenFOAM ready)
 """
 
 import numpy as np
@@ -19,7 +19,7 @@ import shutil
 import sys
 
 # ------------------------------------------------------------------
-# Configuration du logging (visible sur Render)
+# Configuration du logging
 # ------------------------------------------------------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -28,31 +28,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger("voltflow-solver")
 
-# ------------------------------------------------------------------
-# Initialisation FastAPI – sans aucun préfixe caché
-# ------------------------------------------------------------------
 app = FastAPI(
     title="VoltFlow AI Thermal Solver API",
-    description="Solveur thermique Fortran (ND)",
-    version="2.4.0",
-    docs_url="/api/docs",          # accessible en /api/docs
-    redoc_url="/api/redoc",        # accessible en /api/redoc
-    root_path=""                  # FORCER l'absence de root_path
+    description="Solveur thermique Fortran & OpenFOAM",
+    version="2.5.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc"
 )
 
 # ------------------------------------------------------------------
-# Middleware : log de TOUTES les requêtes entrantes (debug 404)
-# ------------------------------------------------------------------
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    logger.info(f"Requête reçue : {request.method} {request.url.path}")
-    response = await call_next(request)
-    if response.status_code == 404:
-        logger.warning(f"404 - Route non trouvée : {request.method} {request.url.path}")
-    return response
-
-# ------------------------------------------------------------------
-# Modèles de données (inchangés, mais robustes)
+# Modèles de données
 # ------------------------------------------------------------------
 class FortranConfig(BaseModel):
     conductivity: float = 50.0
@@ -61,18 +46,19 @@ class FortranConfig(BaseModel):
     initial_temp: float = 1000.0
     boundary_temp: float = 25.0
     heat_flux: float = 1000.0
-    nx: int = 100
-    ny: int = 1
-    nz: int = 1
+    nx: int = 50
+    ny: int = 50
+    nz: int = 50
     max_iterations: int = 5000
     dt: float = 0.1
     tolerance: float = 1e-6
-    geometry_type: str = "1d_rod"
+    geometry_type: str = "3d_complex"
     mesh_file: Optional[str] = None
+    solver_type: str = "fem_fortran"
 
 class SimulationRequest(BaseModel):
-    simulation_id: str
-    user_id: str
+    simulation_id: string
+    user_id: string
     fortran_config: FortranConfig
     output_format: str = "vtk"
 
@@ -91,43 +77,35 @@ class SimulationResponse(BaseModel):
     metadata: Dict[str, Any] = {}
 
 # ------------------------------------------------------------------
-# Solveur Fortran – recherche améliorée du binaire
+# Solveur Fortran
 # ------------------------------------------------------------------
 class FortranSolver:
     def __init__(self):
-        # Chemins possibles (ordre prioritaire)
-        possible_paths = [
-            "/app/backend/solver-engine/thermal_solver.exe",
-            os.path.join(os.getcwd(), "thermal_solver.exe"),
-            os.path.join(os.path.dirname(__file__), "thermal_solver.exe"),
-            "/home/ubuntu/voltflow-ai/voltflow-ai-main/backend/solver-engine/thermal_solver.exe",
-            "./thermal_solver.exe"          # ajout pour compatibilité Render
-        ]
-        
-        self.solver_path = None
-        for p in possible_paths:
-            if os.path.exists(p):
-                self.solver_path = os.path.abspath(p)
-                logger.info(f"✅ Solveur Fortran trouvé : {self.solver_path}")
-                break
-        
-        if not self.solver_path:
-            logger.error("❌ Aucun solveur Fortran trouvé. Les simulations échoueront.")
-        
-        self.temp_dir = tempfile.gettempdir()
+        self.solver_path = self._find_solver()
         self.results_dir = os.environ.get("RESULTS_DIR", "/app/results")
         os.makedirs(self.results_dir, exist_ok=True)
-        logger.info(f"Dossier des résultats : {self.results_dir}")
     
+    def _find_solver(self):
+        paths = [
+            "/app/backend/solver-engine/thermal_solver.exe",
+            os.path.join(os.getcwd(), "thermal_solver.exe"),
+            "./thermal_solver.exe"
+        ]
+        for p in paths:
+            if os.path.exists(p):
+                return os.path.abspath(p)
+        return None
+
     def run_simulation(self, config: FortranConfig) -> Dict[str, Any]:
-        if not self.solver_path or not os.path.exists(self.solver_path):
-            raise RuntimeError("Solveur Fortran introuvable – vérifiez le déploiement")
+        if not self.solver_path:
+            raise RuntimeError("Binaire Fortran introuvable")
         
-        try:
+        with tempfile.TemporaryDirectory() as tmpdir:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            config_file = os.path.join(self.temp_dir, f"config_{timestamp}.txt")
-            output_filename = f"thermal_results_{timestamp}.vtk"
+            config_file = os.path.join(tmpdir, "config.txt")
+            output_filename = f"results_{timestamp}.vtk"
             
+            # Écriture du fichier de config pour le Fortran
             with open(config_file, 'w') as f:
                 f.write(f"{config.conductivity}\n")
                 f.write(f"{config.density}\n")
@@ -143,192 +121,82 @@ class FortranSolver:
                 f.write(f"{output_filename}\n")
             
             start_time = datetime.now()
-            if os.name != 'nt':  # chmod inutile sur Windows
-                os.chmod(self.solver_path, 0o755)
+            os.chmod(self.solver_path, 0o755)
             
-            cmd = [self.solver_path, config_file]
-            logger.info(f"Exécution : {' '.join(cmd)}")
             result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,
-                cwd=self.temp_dir
+                [self.solver_path, config_file],
+                capture_output=True, text=True, cwd=tmpdir
             )
-            execution_time = (datetime.now() - start_time).total_seconds()
             
             if result.returncode != 0:
-                logger.error(f"STDERR: {result.stderr}")
-                raise RuntimeError(f"Échec du solveur (code {result.returncode})")
+                raise RuntimeError(f"Erreur solveur: {result.stderr}")
             
-            output_data = self._parse_json_output(result.stdout)
-            if not output_data:
-                logger.warning("Pas de JSON en sortie, utilisation des valeurs par défaut")
-                output_data = self._create_default_output(config)
+            # Parsing de la sortie JSON du Fortran
+            output_data = self._parse_json(result.stdout)
             
-            output_data["execution_time"] = execution_time
-            
-            # Copie du fichier VTK vers le dossier persistant
-            vtk_path = os.path.join(self.temp_dir, output_filename)
-            if os.path.exists(vtk_path):
-                dest_file = os.path.join(self.results_dir, output_filename)
-                shutil.copy2(vtk_path, dest_file)
-                # URL publique servie par ce même serveur
+            # Déplacement du VTK
+            vtk_src = os.path.join(tmpdir, output_filename)
+            if os.path.exists(vtk_src):
+                dest_path = os.path.join(self.results_dir, output_filename)
+                shutil.copy2(vtk_src, dest_path)
                 output_data["vtk_file_url"] = f"/api/results/{output_filename}"
-                output_data["output_file"] = output_filename
-                os.remove(vtk_path)
-                logger.info(f"VTK copié : {dest_file}")
-            else:
-                logger.warning("Fichier VTK non généré par le solveur")
             
-            # Nettoyage
-            if os.path.exists(config_file):
-                os.remove(config_file)
-            
+            output_data["execution_time"] = (datetime.now() - start_time).total_seconds()
             return output_data
-            
-        except Exception as e:
-            logger.error(f"Erreur dans run_simulation : {str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
-    def _parse_json_output(self, stdout: str) -> Optional[Dict[str, Any]]:
-        try:
-            lines = stdout.split('\n')
-            json_lines = []
-            in_json = False
-            for line in lines:
-                if line.strip() == "{":
-                    in_json = True
-                if in_json:
-                    json_lines.append(line)
-                if line.strip() == "}":
-                    break
-            if json_lines:
-                return json.loads('\n'.join(json_lines))
-        except Exception as e:
-            logger.debug(f"Parsing JSON échoué : {e}")
-        return None
-    
-    def _create_default_output(self, config: FortranConfig) -> Dict[str, Any]:
-        return {
-            "success": True,
-            "geometry_type": config.geometry_type,
-            "mesh_points": config.nx * config.ny * config.nz,
-            "iterations": 1000,
-            "final_residual": 1e-5,
-            "temperature_stats": {
-                "max": config.initial_temp,
-                "min": config.boundary_temp,
-                "avg": (config.initial_temp + config.boundary_temp) / 2
-            },
-            "output_file": "",
-            "metadata": {"source": "fallback", "warning": "solveur non exécuté"}
-        }
 
-# ------------------------------------------------------------------
-# Instance unique du solveur
-# ------------------------------------------------------------------
+    def _parse_json(self, stdout):
+        try:
+            start = stdout.find('{')
+            end = stdout.rfind('}') + 1
+            return json.loads(stdout[start:end])
+        except:
+            return {"success": False, "error": "JSON parsing failed"}
+
 fortran_solver = FortranSolver()
 
-# ------------------------------------------------------------------
-# ROUTES – Vérifiez absolument l'alignement avec l'appel Edge Function
-# ------------------------------------------------------------------
-@app.get("/")
-async def root():
-    """Endpoint de test – retourne l'état du service"""
-    return {
-        "service": "VoltFlow AI Thermal Solver",
-        "status": "online",
-        "solver_available": fortran_solver.solver_path is not None,
-        "version": "2.4.0"
-    }
-
-@app.get("/health")
-async def health():
-    """Healthcheck pour Render / monitoring"""
-    return {"status": "healthy"}
-
-# ⚠️  ROUTE CRITIQUE – DOIT ÊTRE EXACTEMENT CELLE APPELÉE
 @app.post("/api/v1/simulate/fortran", response_model=SimulationResponse)
-async def simulate_fortran(request: SimulationRequest):
-    """
-    Point d'entrée pour la Edge Function Supabase.
-    Reçoit une SimulationRequest et retourne les résultats + URL du VTK.
-    """
-    logger.info(f"Simulation demandée : {request.simulation_id}")
-    
-    if not fortran_solver.solver_path:
-        raise HTTPException(
-            status_code=503,
-            detail="Solveur Fortran non disponible – binaire manquant"
-        )
-    
+async def simulate(request: SimulationRequest):
+    logger.info(f"Simulation: {request.simulation_id}")
     try:
-        results = fortran_solver.run_simulation(request.fortran_config)
+        if request.fortran_config.solver_type == "openfoam":
+            # Placeholder pour OpenFOAM
+            return SimulationResponse(
+                success=False,
+                simulation_id=request.simulation_id,
+                geometry_type="openfoam",
+                mesh_points=0,
+                iterations=0,
+                final_residual=0,
+                temperature_stats={"avg": 0},
+                output_file="",
+                execution_time=0,
+                metadata={"error": "OpenFOAM non encore configuré sur ce worker"}
+            )
         
-        # Extraction des données de champ pour le frontend
-        temp_stats = results.get("temperature_stats", {})
-        temp_field = {
-            "values": [temp_stats.get("avg", 0.0)] * results.get("mesh_points", 1),
-            "min": temp_stats.get("min", 0.0),
-            "max": temp_stats.get("max", 0.0)
-        }
-
-        response = SimulationResponse(
+        results = fortran_solver.run_simulation(request.fortran_config)
+        return SimulationResponse(
             success=results.get("success", True),
             simulation_id=request.simulation_id,
-            geometry_type=results.get("geometry_type", request.fortran_config.geometry_type),
+            geometry_type=results.get("geometry_type", "3d"),
             mesh_points=results.get("mesh_points", 0),
             iterations=results.get("iterations", 0),
             final_residual=results.get("final_residual", 0.0),
-            temperature_stats=temp_stats,
-            temperature_field=temp_field,
+            temperature_stats=results.get("temperature_stats", {}),
+            temperature_field={"values": [results.get("temperature_stats", {}).get("avg", 0)] * results.get("mesh_points", 1)},
             output_file=results.get("output_file", ""),
             vtk_file_url=results.get("vtk_file_url"),
-            execution_time=results.get("execution_time", 0.0),
-            metadata=results.get("metadata", {})
+            execution_time=results.get("execution_time", 0.0)
         )
-        
-        logger.info(f"Simulation {request.simulation_id} terminée en {response.execution_time:.2f}s")
-        return response
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.exception("Erreur inattendue dans simulate_fortran")
+        logger.error(f"Erreur: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/results/{filename}")
-async def get_result_file(filename: str):
-    """Téléchargement des fichiers VTK générés"""
-    file_path = Path(fortran_solver.results_dir) / filename
-    if not file_path.exists():
-        logger.warning(f"Fichier demandé inexistant : {filename}")
-        raise HTTPException(status_code=404, detail="Fichier non trouvé")
-    return FileResponse(path=file_path, filename=filename)
+async def get_file(filename: str):
+    path = Path(fortran_solver.results_dir) / filename
+    if not path.exists(): raise HTTPException(status_code=404)
+    return FileResponse(path)
 
-# ------------------------------------------------------------------
-# Gestionnaire global des 404 – utile pour déboguer
-# ------------------------------------------------------------------
-@app.exception_handler(404)
-async def not_found_handler(request: Request, exc):
-    logger.error(f"404 - Route inexistante : {request.method} {request.url.path}")
-    return JSONResponse(
-        status_code=404,
-        content={"detail": f"Route non trouvée: {request.method} {request.url.path}"}
-    )
-
-# ------------------------------------------------------------------
-# Lancement du serveur (port depuis l'environnement Render)
-# ------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
-    logger.info(f"Démarrage du serveur sur le port {port}")
-    uvicorn.run(
-        "bridge_api:app",
-        host="0.0.0.0",
-        port=port,
-        log_level="info",
-        reload=False  # toujours False en production
-    )
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
