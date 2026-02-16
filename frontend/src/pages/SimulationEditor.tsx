@@ -98,6 +98,8 @@ export default function SimulationEditor() {
     viewMode: 'volume' as 'volume' | 'slice' | 'wireframe' | 'point_cloud',
     colorMap: 'heat' as 'heat' | 'coolwarm' | 'rainbow' | 'viridis',
     opacity: 0.8,
+    showEnergyFlux: false,
+    fluxType: 'total' as 'total' | 'advective' | 'diffusive',
   });
 
   const [isSaving, setIsSaving] = useState(false);
@@ -230,6 +232,19 @@ export default function SimulationEditor() {
           : 'steel',
         thermal_conductivity: materialsData.find((m) => m.id === formData.materialId)?.conductivity || 50,
       });
+
+      // Ajout des champs de flux d'énergie si disponibles
+      if (results.energy_flux) {
+        fields.push({
+          id: 'energy_flux',
+          name: 'Energy Flux',
+          type: 'flux' as any,
+          values: new Float32Array(results.energy_flux.total || []),
+          units: 'W',
+          min: Math.min(...(results.energy_flux.total || [0])),
+          max: Math.max(...(results.energy_flux.total || [0])),
+        });
+      }
     }
 
     const config: Partial<IndustrialConfig> = {
@@ -378,8 +393,12 @@ export default function SimulationEditor() {
           await startSimulationHook(simIdToStart);
           toast.success('Simulation lancée automatiquement !');
         } catch (simError: any) {
-          console.error('❌ Erreur lancement automatique:', simError);
-        }
+          console.error(\'❌ Erreur lancement automatique:\', simError);
+          toast.error(`Échec du lancement: ${simError.message}`);
+          // Réinitialiser l\'état d\'upload
+          setUploadPhase(\'idle\');
+          setUploadProgress(0);
+          setUploadingFile(false);       }
       }
     } catch (error: any) {
       setUploadingFile(false);
