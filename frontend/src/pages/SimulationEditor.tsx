@@ -616,16 +616,57 @@ export default function SimulationEditor() {
           </CardHeader>
           <CardContent className="flex-1 p-0 relative">
             {prepareViewerData ? (
-              <VTKViewer
-                key={prepareViewerData.mesh.url}
-                data={prepareViewerData}
-                showGrid={viewState.showGrid}
-                showAxes={viewState.showAxes}
-                viewMode={viewState.viewMode}
-                colorMap={viewState.colorMap}
-                opacity={viewState.opacity}
-                onPointSelect={setSelectedPoint}
-              />
+              <>
+                <VTKViewer
+                  key={prepareViewerData.mesh.url}
+                  data={prepareViewerData}
+                  showGrid={viewState.showGrid}
+                  showAxes={viewState.showAxes}
+                  viewMode={viewState.viewMode}
+                  colorMap={viewState.colorMap}
+                  opacity={viewState.opacity}
+                  onPointSelect={setSelectedPoint}
+                />
+                
+                {/* Statistiques de Simulation */}
+                <div className="absolute top-4 left-4 flex flex-col gap-2">
+                  <Card className="bg-background/80 backdrop-blur-sm border-none shadow-md w-48">
+                    <CardHeader className="p-3 pb-0">
+                      <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Températures</CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-2 space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Max</span>
+                        <span className="text-sm font-mono font-bold text-red-500">{results?.max_temperature?.toFixed(1) || results?.temperature_stats?.max?.toFixed(1) || '0.0'}°C</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Min</span>
+                        <span className="text-sm font-mono font-bold text-blue-500">{results?.min_temperature?.toFixed(1) || results?.temperature_stats?.min?.toFixed(1) || '0.0'}°C</span>
+                      </div>
+                      <div className="flex justify-between items-center border-t pt-1 mt-1">
+                        <span className="text-xs">Moyenne</span>
+                        <span className="text-sm font-mono font-bold">{results?.average_temperature?.toFixed(1) || results?.temperature_stats?.avg?.toFixed(1) || '0.0'}°C</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="bg-background/80 backdrop-blur-sm border-none shadow-md w-48">
+                    <CardHeader className="p-3 pb-0">
+                      <CardTitle className="text-xs font-bold uppercase tracking-wider text-muted-foreground">Convergence</CardTitle>
+                    </CardHeader>
+                    <CardContent className="p-3 pt-2 space-y-1">
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Itérations</span>
+                        <span className="text-sm font-mono font-bold">{results?.iterations || results?.convergence_metrics?.iterations || '0'}</span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs">Résidu</span>
+                        <span className="text-sm font-mono font-bold text-green-600">{results?.final_residual?.toExponential(2) || results?.convergence_metrics?.final_residual?.toExponential(2) || '0.00e0'}</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </>
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">
                 {uploadingFile ? (
