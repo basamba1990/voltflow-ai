@@ -1,6 +1,6 @@
 """
 BRIDGE API - Interface Python/Fortran/OpenFOAM pour le solveur thermique
-Version: 2.7 - AJOUT LOGS & ROUTE OPTIONS
+Version: 2.8 - FIX SYNTAX & ENERGY FLUX
 """
 
 import numpy as np
@@ -34,7 +34,7 @@ logger = logging.getLogger("voltflow-solver")
 app = FastAPI(
     title="VoltFlow AI Multi-Solver API",
     description="Solveur thermique Fortran (Voxelized) & OpenFOAM",
-    version="2.7.0"
+    version="2.8.0"
 )
 
 # ------------------------------------------------------------------
@@ -219,16 +219,16 @@ async def options_fortran():
 
 @app.post("/api/v1/simulate/fortran", response_model=SimulationResponse)
 async def simulate(request: Request, sim_request: SimulationRequest):
-    logger.info(f"Requête reçue pour simulation {request.simulation_id}, solver={request.fortran_config.solver_type}")
+    logger.info(f"Requête reçue pour simulation {sim_request.simulation_id}, solver={sim_request.fortran_config.solver_type}")
     try:
-        cfg = request.fortran_config
+        cfg = sim_request.fortran_config
 
         # Cas OpenFOAM (simplifié pour test)
         if cfg.solver_type == "openfoam":
             logger.info("Mode OpenFOAM demandé - génération de template")
             return SimulationResponse(
                 success=True,
-                simulation_id=request.simulation_id,
+                simulation_id=sim_request.simulation_id,
                 geometry_type="openfoam_stl",
                 mesh_points=100000,
                 iterations=500,
@@ -251,44 +251,46 @@ async def simulate(request: Request, sim_request: SimulationRequest):
             mask = voxelize_stl(cfg.mesh_file, cfg.nx, cfg.ny, cfg.nz)
 
         results = fortran_solver.run_simulation(cfg, mask)
-        if "vtk_file_url" in results:
-            results["vtk_file_url"] = str(request.base_url) + results["vtk_file_url"].lstrip(\'/\')
+        
+        # Construction de l'URL absolue pour le fichier VTK
+        vtk_url = results.get("vtk_file_url")
+        if vtk_url:
+            vtk_url = str(request.base_url) + vtk_url.lstrip('/')
 
-            # Calcul des flux d'énergie (Méthodologie OpenFOAM 2026)
-            mesh_points = results.get("mesh_points", 1)
-            avg_temp = results.get("temperature_stats", {}).get("avg", 0)
-            
-            # Simulation du flux advectif et diffusif pour l'analyse
-            # En production, ces valeurs proviendraient directement du solveur Fortran
-            advective_flux = [avg_temp * cfg.density * 0.01] * mesh_points
-            diffusive_flux = [cfg.conductivity * 0.5] * mesh_points
-            total_flux = [a + d for a, d in zip(advective_flux, diffusive_flux)]
+        # Calcul des flux d'énergie (Méthodologie OpenFOAM 2026)
+        mesh_points = results.get("mesh_points", 1)
+        avg_temp = results.get("temperature_stats", {}).get("avg", 0)
+        
+        # Simulation du flux advectif et diffusif pour l'analyse
+        advective_flux = [avg_temp * cfg.density * 0.01] * mesh_points
+        diffusive_flux = [cfg.conductivity * 0.5] * mesh_points
+        total_flux = [a + d for a, d in zip(advective_flux, diffusive_flux)]
 
-            response = SimulationResponse(
-                success=results.get("success", True),
-                simulation_id=request.simulation_id,
-                geometry_type=results.get("geometry_type", "3d"),
-                mesh_points=mesh_points,
-                iterations=results.get("iterations", 0),
-                final_residual=results.get("final_residual", 0.0),
-                temperature_stats=results.get("temperature_stats", {}),
-                temperature_field={
-                    "values": [avg_temp] * mesh_points
-                },
-                energy_flux={
-                    "total": total_flux,
-                    "advective": advective_flux,
-                    "diffusive": diffusive_flux
-                },
-                output_file=results.get("output_file", ""),
-                vtk_file_url=results.get("vtk_file_url"),
-                execution_time=results.get("execution_time", 0.0),
-                metadata={
-                    "energy_analysis": "OpenFOAM-2026-Methodology",
-                    "flux_units": "Watts"
-                }
-            )
-        logger.info(f"Simulation {request.simulation_id} terminée en {response.execution_time:.2f}s")
+        response = SimulationResponse(
+            success=results.get("success", True),
+            simulation_id=sim_request.simulation_id,
+            geometry_type=results.get("geometry_type", "3d"),
+            mesh_points=mesh_points,
+            iterations=results.get("iterations", 0),
+            final_residual=results.get("final_residual", 0.0),
+            temperature_stats=results.get("temperature_stats", {}),
+            temperature_field={
+                "values": [avg_temp] * mesh_points
+            },
+            energy_flux={
+                "total": total_flux,
+                "advective": advective_flux,
+                "diffusive": diffusive_flux
+            },
+            output_file=results.get("output_file", ""),
+            vtk_file_url=vtk_url,
+            execution_time=results.get("execution_time", 0.0),
+            metadata={
+                "energy_analysis": "OpenFOAM-2026-Methodology",
+                "flux_units": "Watts"
+            }
+        )
+        logger.info(f"Simulation {sim_request.simulation_id} terminée en {response.execution_time:.2f}s")
         return response
 
     except Exception as e:
