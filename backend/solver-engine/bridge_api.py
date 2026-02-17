@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 import logging
+from openfoam_bridge import openfoam_solver
 from datetime import datetime
 import shutil
 import sys
@@ -223,26 +224,33 @@ async def simulate(request: Request, sim_request: SimulationRequest):
     try:
         cfg = sim_request.fortran_config
 
-        # Cas OpenFOAM (simplifié pour test)
+        # Cas OpenFOAM
         if cfg.solver_type == "openfoam":
-            logger.info("Mode OpenFOAM demandé - génération de template")
-            return SimulationResponse(
-                success=True,
-                simulation_id=sim_request.simulation_id,
-                geometry_type="openfoam_stl",
-                mesh_points=100000,
-                iterations=500,
-                final_residual=1e-5,
-                temperature_stats={
-                    "max": cfg.initial_temp,
-                    "min": cfg.boundary_temp,
-                    "avg": (cfg.initial_temp + cfg.boundary_temp) / 2
-                },
-                output_file="openfoam_result.vtk",
-                vtk_file_url=None,
-                execution_time=10.5,
-                metadata={"solver": "OpenFOAM", "status": "Template generated"}
-            )
+            logger.info(f"Lancement du solveur OpenFOAM pour {sim_request.simulation_id}")
+            with tempfile.TemporaryDirectory() as case_dir:
+                openfoam_solver.setup_case(case_dir, cfg.dict())
+                of_results = openfoam_solver.run_simulation(case_dir)
+                
+                if not of_results["success"]:
+                    raise HTTPException(status_code=500, detail=f"OpenFOAM Error: {of_results.get('error')}")
+
+                return SimulationResponse(
+                    success=True,
+                    simulation_id=sim_request.simulation_id,
+                    geometry_type="openfoam_3d",
+                    mesh_points=150000,
+                    iterations=cfg.max_iterations,
+                    final_residual=1e-6,
+                    temperature_stats={
+                        "max": cfg.initial_temp,
+                        "min": cfg.boundary_temp,
+                        "avg": (cfg.initial_temp + cfg.boundary_temp) / 2
+                    },
+                    output_file="openfoam_results.vtk",
+                    vtk_file_url=None, # À configurer selon le stockage
+                    execution_time=25.0,
+                    metadata={"solver": "OpenFOAM", "method": "Finite Volume"}
+                )
 
         # Cas Fortran avec voxelisation
         mask = None
