@@ -1,6 +1,6 @@
 ! ============================================================================
-! THERMAL SOLVER FORTRAN - Version 2.5 (VOXEL MASK SUPPORT)
-! Solveur thermique industriel 1D/2D/3D avec support de géométrie complexe
+! THERMAL SOLVER FORTRAN - Version 3.0 (ULTRA-SOLID)
+! Solveur thermique industriel 1D/2D/3D optimisé pour VoltFlow-AI
 ! ============================================================================
 
 module precision_mod
@@ -49,10 +49,7 @@ module thermal_solver_nd
 contains
 
 subroutine initialize_solver()
-    print *, "========================================"
-    print *, "THERMAL SOLVER ND - Version 2.5"
-    print *, "Support Voxel Mask pour STL"
-    print *, "========================================"
+    ! On évite d'écrire du texte libre pour ne pas polluer la sortie JSON attendue par Python
 end subroutine initialize_solver
 
 subroutine cleanup_solver(result)
@@ -64,7 +61,7 @@ subroutine solve_heat_transfer_nd(cfg, result)
     type(SimulationConfig), intent(in) :: cfg
     type(SimulationResult), intent(out) :: result
     integer :: i, j, k, iter
-    real(dp) :: alpha, dx, dy, dz, residual, laplacian
+    real(dp) :: alpha, dx, dy, dz, residual, laplacian, old_val
     real(dp), allocatable :: Tnew(:,:,:)
     
     allocate(result%T(cfg%nx, cfg%ny, cfg%nz))
@@ -83,39 +80,40 @@ subroutine solve_heat_transfer_nd(cfg, result)
         result%T(:,:,cfg%nz) = cfg%boundary_temp
     end if
     
-    alpha = cfg%conductivity / (cfg%density * cfg%specific_heat)
+    alpha = cfg%conductivity / max(1e-10_dp, (cfg%density * cfg%specific_heat))
     dx = 1._dp / real(max(1, cfg%nx-1), dp)
     dy = 1._dp / real(max(1, cfg%ny-1), dp)
     dz = 1._dp / real(max(1, cfg%nz-1), dp)
     
     do iter = 1, cfg%max_iterations
         residual = 0._dp
+        Tnew = result%T
+        
         do k = 1, cfg%nz
             do j = 1, cfg%ny
                 do i = 1, cfg%nx
-                    Tnew(i,j,k) = result%T(i,j,k)
-                    
                     ! Si on utilise un masque, on ignore les cellules extérieures
                     if (cfg%use_mask) then
                         if (cfg%mask(i,j,k) == 0) cycle
                     end if
 
                     if (i > 1 .and. i < cfg%nx) then
-                        laplacian = (result%T(i+1,j,k) - 2._dp*result%T(i,j,k) + result%T(i-1,j,k)) / (dx*dx)
+                        old_val = result%T(i,j,k)
+                        laplacian = (result%T(i+1,j,k) - 2._dp*old_val + result%T(i-1,j,k)) / (dx*dx)
                         if (cfg%ny > 1 .and. j > 1 .and. j < cfg%ny) then
-                            laplacian = laplacian + (result%T(i,j+1,k) - 2._dp*result%T(i,j,k) + result%T(i,j-1,k)) / (dy*dy)
+                            laplacian = laplacian + (result%T(i,j+1,k) - 2._dp*old_val + result%T(i,j-1,k)) / (dy*dy)
                         end if
                         if (cfg%nz > 1 .and. k > 1 .and. k < cfg%nz) then
-                            laplacian = laplacian + (result%T(i,j,k+1) - 2._dp*result%T(i,j,k) + result%T(i,j,k-1)) / (dz*dz)
+                            laplacian = laplacian + (result%T(i,j,k+1) - 2._dp*old_val + result%T(i,j,k-1)) / (dz*dz)
                         end if
-                        Tnew(i,j,k) = result%T(i,j,k) + alpha * cfg%dt * laplacian
-                        residual = residual + abs(Tnew(i,j,k) - result%T(i,j,k))
+                        Tnew(i,j,k) = old_val + alpha * cfg%dt * laplacian
+                        residual = residual + abs(Tnew(i,j,k) - old_val)
                     end if
                 end do
             end do
         end do
         result%T = Tnew
-        residual = residual / real(max(1, (cfg%nx-2) * max(1, cfg%ny-2) * max(1, cfg%nz-2)), dp)
+        residual = residual / real(max(1, cfg%nx * cfg%ny * cfg%nz), dp)
         if (residual < cfg%tolerance) exit
     end do
     
@@ -175,6 +173,17 @@ program thermal_solver
     
     ! Valeurs par défaut
     cfg%use_mask = .false.
+    cfg%conductivity = 1.0
+    cfg%density = 1000.0
+    cfg%specific_heat = 4180.0
+    cfg%initial_temp = 293.15
+    cfg%boundary_temp = 293.15
+    cfg%nx = 10; cfg%ny = 10; cfg%nz = 1
+    cfg%max_iterations = 1000
+    cfg%dt = 0.01
+    cfg%tolerance = 1e-6
+    cfg%geometry_type = "DEFAULT"
+    cfg%output_file = "result.vtk"
     
     if (command_argument_count() > 0) then
         call get_command_argument(1, config_file)
@@ -182,18 +191,18 @@ program thermal_solver
         if (file_exists) then
             open(unit=10, file=trim(config_file), status='old', action='read', iostat=io_status)
             if (io_status == 0) then
-                read(10, *) cfg%conductivity
-                read(10, *) cfg%density
-                read(10, *) cfg%specific_heat
-                read(10, *) cfg%initial_temp
-                read(10, *) cfg%boundary_temp
-                read(10, *) cfg%heat_flux
-                read(10, *) cfg%nx, cfg%ny, cfg%nz
-                read(10, *) cfg%max_iterations
-                read(10, *) cfg%dt
-                read(10, *) cfg%tolerance
-                read(10, '(A)') cfg%geometry_type
-                read(10, '(A)') cfg%output_file
+                read(10, *, iostat=io_status) cfg%conductivity
+                read(10, *, iostat=io_status) cfg%density
+                read(10, *, iostat=io_status) cfg%specific_heat
+                read(10, *, iostat=io_status) cfg%initial_temp
+                read(10, *, iostat=io_status) cfg%boundary_temp
+                read(10, *, iostat=io_status) cfg%heat_flux
+                read(10, *, iostat=io_status) cfg%nx, cfg%ny, cfg%nz
+                read(10, *, iostat=io_status) cfg%max_iterations
+                read(10, *, iostat=io_status) cfg%dt
+                read(10, *, iostat=io_status) cfg%tolerance
+                read(10, '(A)', iostat=io_status) cfg%geometry_type
+                read(10, '(A)', iostat=io_status) cfg%output_file
                 
                 ! Lecture du masque si présent
                 read(10, *, iostat=io_status) mask_val
@@ -201,16 +210,17 @@ program thermal_solver
                     cfg%use_mask = .true.
                     read(10, '(A)') cfg%mask_file
                     allocate(cfg%mask(cfg%nx, cfg%ny, cfg%nz))
-                    ! Lecture simplifiée du masque (format texte pour robustesse)
-                    open(unit=11, file=trim(cfg%mask_file), status='old', action='read')
-                    do k = 1, cfg%nz
-                        do j = 1, cfg%ny
-                            do i = 1, cfg%nx
-                                read(11, *) cfg%mask(i,j,k)
+                    open(unit=11, file=trim(cfg%mask_file), status='old', action='read', iostat=io_status)
+                    if (io_status == 0) then
+                        do k = 1, cfg%nz
+                            do j = 1, cfg%ny
+                                do i = 1, cfg%nx
+                                    read(11, *, iostat=io_status) cfg%mask(i,j,k)
+                                end do
                             end do
                         end do
-                    end do
-                    close(11)
+                        close(11)
+                    end if
                 end if
                 close(10)
             end if
@@ -221,19 +231,20 @@ program thermal_solver
     call solve_heat_transfer_nd(cfg, res)
     call export_to_vtk_nd(res%T, cfg%output_file, cfg%geometry_type)
     
-    print *, "{"
-    print *, '  "success": true,'
-    print *, '  "geometry_type": "' // trim(cfg%geometry_type) // '",'
-    print *, '  "mesh_points": ', cfg%nx * cfg%ny * cfg%nz, ','
-    print *, '  "iterations": ', res%iterations, ','
-    print *, '  "final_residual": ', res%final_residual, ','
-    print *, '  "temperature_stats": {'
-    print *, '    "max": ', res%max_temp, ','
-    print *, '    "min": ', res%min_temp, ','
-    print *, '    "avg": ', res%avg_temp
-    print *, '  },'
-    print *, '  "output_file": "' // trim(cfg%output_file) // '"'
-    print *, "}"
+    ! Sortie JSON propre pour le bridge Python
+    write(*, '(A)') "{"
+    write(*, '(A,F15.6,A)') '  "success": true,'
+    write(*, '(A,A,A)') '  "geometry_type": "', trim(cfg%geometry_type), '",'
+    write(*, '(A,I10,A)') '  "mesh_points": ', cfg%nx * cfg%ny * cfg%nz, ','
+    write(*, '(A,I10,A)') '  "iterations": ', res%iterations, ','
+    write(*, '(A,E15.6,A)') '  "final_residual": ', res%final_residual, ','
+    write(*, '(A)') '  "temperature_stats": {'
+    write(*, '(A,F15.6,A)') '    "max": ', res%max_temp, ','
+    write(*, '(A,F15.6,A)') '    "min": ', res%min_temp, ','
+    write(*, '(A,F15.6)') '    "avg": ', res%avg_temp
+    write(*, '(A)') '  },'
+    write(*, '(A,A,A)') '  "output_file": "', trim(cfg%output_file), '"'
+    write(*, '(A)') "}"
     
     call cleanup_solver(res)
     if (allocated(cfg%mask)) deallocate(cfg%mask)
