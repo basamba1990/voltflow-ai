@@ -393,12 +393,13 @@ export default function SimulationEditor() {
           await startSimulationHook(simIdToStart);
           toast.success('Simulation lancée automatiquement !');
         } catch (simError: any) {
-          console.error(\'❌ Erreur lancement automatique:\', simError);
+          console.error('❌ Erreur lancement automatique:', simError);
           toast.error(`Échec du lancement: ${simError.message}`);
-          // Réinitialiser l\'état d\'upload
-          setUploadPhase(\'idle\');
+          // Réinitialiser l'état d'upload
+          setUploadPhase('idle');
           setUploadProgress(0);
-          setUploadingFile(false);       }
+          setUploadingFile(false);
+        }
       }
     } catch (error: any) {
       setUploadingFile(false);
