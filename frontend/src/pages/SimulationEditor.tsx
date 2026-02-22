@@ -1,4 +1,4 @@
-// src/pages/SimulationEditor.tsx - VERSION COMPLÈTE CORRIGÉE
+// src/pages/SimulationEditor.tsx - VERSION COMPLÈTE RESTAURÉE AVEC CORRECTIFS DE SAUVEGARDE
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, useLocation } from 'wouter';
 import { toast } from 'sonner';
@@ -12,6 +12,8 @@ import {
   Loader2,
   AlertCircle,
   ChevronLeft,
+  FileUp,
+  CheckCircle,
   Box,
   Settings,
   Grid3x3,
@@ -36,6 +38,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Textarea } from '@/components/ui/textarea';
 import VTKViewer from '@/components/Viewers/VTKViewer';
 import type { IndustrialField, IndustrialConfig, IndustrialLegend, UnitSystem } from '@/components/Viewers/VTKViewer';
@@ -102,6 +105,7 @@ export default function SimulationEditor() {
   const [isSaving, setIsSaving] = useState(false);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploadPhase, setUploadPhase] = useState<'idle' | 'uploading' | 'finalizing'>('idle');
   const [selectedPoint, setSelectedPoint] = useState<{
@@ -144,6 +148,20 @@ export default function SimulationEditor() {
       return { nx: base, ny: base, nz: base };
     }
   }, []);
+
+  // Icône selon le type
+  const getGeometryIcon = (geometryType: string) => {
+    switch (geometryType) {
+      case '1d_rod':
+        return BarChart3;
+      case '2d_plate':
+        return Square;
+      case '3d_complex':
+        return Box;
+      default:
+        return Box;
+    }
+  };
 
   // Initialisation des données depuis la simulation existante
   useEffect(() => {
@@ -215,6 +233,7 @@ export default function SimulationEditor() {
         thermal_conductivity: materialsData.find((m) => m.id === formData.materialId)?.conductivity || 50,
       });
 
+      // Ajout des champs de flux d'énergie si disponibles
       if (results.energy_flux) {
         fields.push({
           id: 'energy_flux',
@@ -279,25 +298,26 @@ export default function SimulationEditor() {
   }, [results, simulation, formData.materialId, materialsData, viewState.colorMap]);
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     setUploadingFile(true);
     setUploadProgress(0);
     setUploadPhase('uploading');
-
-    const file = e.target.files?.[0];
-    if (!file) {
-      setUploadingFile(false);
-      toast.error('Aucun fichier sélectionné');
-      return;
-    }
+    setUploadError(null);
 
     try {
-      const progressInterval = setInterval(() => {
+      // Simulation de progression pour l'UX
+      const interval = setInterval(() => {
         setUploadProgress((prev) => {
-          if (prev < 90) return prev + 5;
-          setUploadPhase('finalizing');
-          return 95;
+          if (prev >= 95) {
+            setUploadPhase('finalizing');
+            clearInterval(interval);
+            return 95;
+          }
+          return prev + 5;
         });
-      }, 500);
+      }, 300);
 
       const result = await SimulationService.uploadGeometry({
         file,
@@ -306,17 +326,19 @@ export default function SimulationEditor() {
         materialId: formData.materialId || undefined,
       });
 
-      clearInterval(progressInterval);
+      clearInterval(interval);
       setUploadProgress(100);
-      setUploadingFile(false);
 
+      // Détection du type pour ajuster le maillage
       const geometryType = result.geometry_type || detectGeometryType(result.fileName);
       const { nx, ny, nz } = getMeshDimensions(geometryType, formData.meshDensity);
 
       setFormData((prev) => ({
         ...prev,
         geometryType: geometryType === '1d_rod' ? 'simple' : 'complex',
-        nx, ny, nz,
+        nx,
+        ny,
+        nz,
         geometryConfig: {
           ...prev.geometryConfig,
           file_url: result.fileUrl,
@@ -326,15 +348,19 @@ export default function SimulationEditor() {
         },
       }));
 
-      toast.success('Géométrie uploadée avec succès');
+      toast.success('Géométrie importée avec succès');
+
       if (!id && result.simulationId) {
         setLocation(`/simulation/${result.simulationId}`);
       } else {
         refresh();
       }
     } catch (error: any) {
+      console.error('Erreur upload:', error);
+      setUploadError(error.message || \"Erreur lors de l'importation\");
+      toast.error(\"Échec de l'importation de la géométrie\");
+    } finally {
       setUploadingFile(false);
-      toast.error(`Échec de l'upload: ${error.message}`);
     }
   };
 
@@ -346,12 +372,15 @@ export default function SimulationEditor() {
 
     setIsSaving(true);
     try {
+      // CORRECTIF: Structure alignée avec le service
       const simulationData = {
         name: formData.name,
         description: formData.description,
         geometryType: formData.geometryType,
         config: {
-          geometry_config: { ...formData.geometryConfig },
+          geometry_config: {
+            ...formData.geometryConfig,
+          },
           boundary_conditions: {
             initial_temp: parseFloat(formData.initialTemp),
             ambient_temp: parseFloat(formData.ambientTemp),
@@ -373,12 +402,13 @@ export default function SimulationEditor() {
         await SimulationService.updateSimulation(id, simulationData);
         toast.success('Simulation mise à jour avec succès !');
       } else {
-        const saved = await SimulationService.createSimulation(simulationData);
+        const savedSimulation = await SimulationService.createSimulation(simulationData);
         toast.success('Simulation créée avec succès !');
-        setLocation(`/simulation/${saved.id}`);
+        setLocation(`/simulation/${savedSimulation.id}`);
       }
       refresh();
     } catch (error: any) {
+      console.error('Erreur sauvegarde simulation:', error);
       toast.error(`Échec de la sauvegarde: ${error.message}`);
     } finally {
       setIsSaving(false);
@@ -390,98 +420,151 @@ export default function SimulationEditor() {
       toast.error('Veuillez sauvegarder la simulation avant de la lancer.');
       return;
     }
+
     try {
       await startSimulationHook(id);
       toast.success('Simulation lancée avec succès !');
+      // Rafraîchir après un court délai pour voir le statut passer à 'running'
       setTimeout(() => refresh(), 2000);
     } catch (error: any) {
+      console.error('Erreur lancement simulation:', error);
       toast.error(`Échec du lancement: ${error.message}`);
     }
   }, [id, startSimulationHook, refresh]);
 
   const handleDeleteSimulation = useCallback(async () => {
-    if (!id || !confirm('Êtes-vous sûr ?')) return;
+    if (!id) return;
+
+    if (!confirm('Êtes-vous sûr de vouloir supprimer cette simulation ?')) {
+      return;
+    }
+
     try {
       await SimulationService.deleteSimulation(id);
-      toast.success('Supprimé');
+      toast.success('Simulation supprimée avec succès.');
       setLocation('/dashboard');
     } catch (error: any) {
-      toast.error('Erreur suppression');
+      console.error('Erreur suppression simulation:', error);
+      toast.error(`Échec de la suppression: ${error.message}`);
     }
   }, [id, setLocation]);
 
   const handleExportResults = useCallback(async () => {
-    if (!results?.vtk_file_url) return;
+    if (!results || !results.vtk_file_url) {
+      toast.error('Aucun résultat VTK à exporter.');
+      return;
+    }
     setIsExporting(true);
     try {
-      const res = await fetch(results.vtk_file_url);
-      const blob = await res.blob();
+      const response = await fetch(results.vtk_file_url);
+      if (!response.ok) {
+        throw new Error(`Échec du téléchargement du fichier VTK: ${response.statusText}`);
+      }
+      const blob = await response.blob();
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `results_${id}.vtk`;
+      a.download = `simulation_results_${id}.vtk`;
+      document.body.appendChild(a);
       a.click();
+      a.remove();
       window.URL.revokeObjectURL(url);
-    } catch (e) {
-      toast.error('Erreur export');
+      toast.success('Résultats exportés avec succès !');
+    } catch (error: any) {
+      console.error('Erreur exportation résultats:', error);
+      toast.error(`Échec de l'exportation: ${error.message}`);
     } finally {
       setIsExporting(false);
     }
   }, [results, id]);
 
-  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
-    setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
-  };
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  }, []);
 
-  const handleSelectChange = (name: string, value: string) => {
-    setFormData(prev => ({ ...prev, [name]: value }));
-  };
+  const handleSelectChange = useCallback((name: string, value: string) => {
+    setFormData((prev) => ({ ...prev, [name]: value }));
+  }, []);
+
+  const handleGeometryDimensionChange = useCallback((dim: string, value: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      geometryConfig: {
+        ...prev.geometryConfig,
+        dimensions: { ...prev.geometryConfig.dimensions, [dim]: parseFloat(value) || 0 },
+      },
+    }));
+  }, []);
+
+  const isFormValid = useMemo(() => {
+    return formData.name.trim() !== '' && formData.materialId.trim() !== '';
+  }, [formData.name, formData.materialId]);
 
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground">
-      <header className="flex items-center justify-between p-4 border-b bg-card">
-        <div className="flex items-center space-x-4">
-          <Button variant="ghost" size="icon" onClick={() => setLocation('/dashboard')}>
-            <ChevronLeft className="h-5 w-5" />
+    <div className=\"flex flex-col h-screen bg-background text-foreground\">
+      <header className=\"flex items-center justify-between p-4 border-b bg-card\">
+        <div className=\"flex items-center space-x-4\">
+          <Button variant=\"ghost\" size=\"icon\" onClick={() => setLocation('/dashboard')}>
+            <ChevronLeft className=\"h-5 w-5\" />
           </Button>
-          <h1 className="text-xl font-semibold">{id ? 'Modifier la Simulation' : 'Nouvelle Simulation'}</h1>
+          <h1 className=\"text-xl font-semibold\">{id ? 'Modifier la Simulation' : 'Nouvelle Simulation'}</h1>
           {simulation && <SimulationStatus status={simulation.status} progress={simulation.progress} />}
         </div>
-        <div className="flex items-center space-x-2">
-          <Button onClick={handleSaveSimulation} disabled={isSaving || isRunning}>
-            {isSaving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
+        <div className=\"flex items-center space-x-2\">
+          <Button onClick={handleSaveSimulation} disabled={isSaving || isRunning || !isFormValid}>
+            {isSaving ? <Loader2 className=\"mr-2 h-4 w-4 animate-spin\" /> : <Save className=\"mr-2 h-4 w-4\" />}
             Sauvegarder
           </Button>
-          <Button onClick={handleStartSimulation} disabled={isRunning || !id} className="bg-green-600 hover:bg-green-700">
-            {isRunning ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+          <Button onClick={handleStartSimulation} disabled={isRunning || !id} className=\"bg-green-600 hover:bg-green-700\">
+            {isRunning ? <Loader2 className=\"mr-2 h-4 w-4 animate-spin\" /> : <Play className=\"mr-2 h-4 w-4\" />}
             Lancer Simulation
           </Button>
-          <Button onClick={handleExportResults} disabled={!results?.vtk_file_url || isExporting} variant="outline">
-            <Download className="mr-2 h-4 w-4" />
-            Exporter
+          <Button onClick={handleExportResults} disabled={!results?.vtk_file_url || isExporting} variant=\"outline\">
+            {isExporting ? <Loader2 className=\"mr-2 h-4 w-4 animate-spin\" /> : <Download className=\"mr-2 h-4 w-4\" />}
+            Exporter Résultats
           </Button>
           {id && (
-            <Button onClick={handleDeleteSimulation} variant="destructive">
-              <Trash2 className="mr-2 h-4 w-4" />
+            <Button onClick={handleDeleteSimulation} variant=\"destructive\">
+              <Trash2 className=\"mr-2 h-4 w-4\" />
+              Supprimer
             </Button>
           )}
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden">
-        <Card className="lg:col-span-2 flex flex-col">
-          <CardHeader className="flex flex-row items-center justify-between">
+      <main className=\"flex-1 grid grid-cols-1 lg:grid-cols-3 gap-4 p-4 overflow-hidden\">
+        <Card className=\"lg:col-span-2 flex flex-col\">
+          <CardHeader className=\"flex flex-row items-center justify-between\">
             <CardTitle>Visualisation 3D</CardTitle>
-            <div className="flex items-center space-x-2">
-              <Button variant="ghost" size="icon" onClick={() => setViewState(p => ({ ...p, showGrid: !p.showGrid }))}>
-                <Grid3x3 className="h-4 w-4" />
+            <div className=\"flex items-center space-x-2\">
+              <Button
+                variant=\"ghost\"
+                size=\"icon\"
+                onClick={() => setViewState((prev) => ({ ...prev, showGrid: !prev.showGrid }))}
+                title=\"Afficher/Masquer Grille\"
+              >
+                {viewState.showGrid ? <Grid3x3 className=\"h-4 w-4\" /> : <Grid3x3 className=\"h-4 w-4 text-muted-foreground\" />}
               </Button>
-              <Button variant="ghost" size="icon" onClick={() => setViewState(p => ({ ...p, isFullscreen: !p.isFullscreen }))}>
-                {viewState.isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              <Button
+                variant=\"ghost\"
+                size=\"icon\"
+                onClick={() => setViewState((prev) => ({ ...prev, showAxes: !prev.showAxes }))}
+                title=\"Afficher/Masquer Axes\"
+              >
+                {viewState.showAxes ? <Box className=\"h-4 w-4\" /> : <Box className=\"h-4 w-4 text-muted-foreground\" />}
+              </Button>
+              <Button
+                variant=\"ghost\"
+                size=\"icon\"
+                onClick={() => setViewState((prev) => ({ ...prev, isFullscreen: !prev.isFullscreen }))}
+                title=\"Plein écran\"
+              >
+                {viewState.isFullscreen ? <Minimize2 className=\"h-4 w-4\" /> : <Maximize2 className=\"h-4 w-4\" />}
               </Button>
             </div>
           </CardHeader>
-          <CardContent className="flex-1 p-0 relative">
+          <CardContent className=\"flex-1 p-0 relative\">
             {prepareViewerData ? (
               <>
                 <VTKViewer
@@ -494,71 +577,282 @@ export default function SimulationEditor() {
                   opacity={viewState.opacity}
                   onPointSelect={setSelectedPoint}
                 />
-                <div className="absolute top-4 left-4 flex flex-col gap-2">
-                  <Card className="bg-background/80 backdrop-blur-sm p-3 w-48">
-                    <div className="text-xs font-bold text-muted-foreground uppercase">Températures</div>
-                    <div className="flex justify-between mt-1">
-                      <span className="text-xs">Max</span>
-                      <span className="text-sm font-mono font-bold text-red-500">{(results?.max_temperature ?? results?.temperature_stats?.max ?? 0).toFixed(1)}°C</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-xs">Min</span>
-                      <span className="text-sm font-mono font-bold text-blue-500">{(results?.min_temperature ?? results?.temperature_stats?.min ?? 0).toFixed(1)}°C</span>
-                    </div>
+                
+                {/* Statistiques de Simulation */}
+                <div className=\"absolute top-4 left-4 flex flex-col gap-2\">
+                  <Card className=\"bg-background/80 backdrop-blur-sm border-none shadow-md w-48\">
+                    <CardHeader className=\"p-3 pb-0\">
+                      <CardTitle className=\"text-xs font-bold uppercase tracking-wider text-muted-foreground\">Températures</CardTitle>
+                    </CardHeader>
+                    <CardContent className=\"p-3 pt-2 space-y-1\">
+                      <div className=\"flex justify-between items-center\">
+                        <span className=\"text-xs\">Max</span>
+                        <span className=\"text-sm font-mono font-bold text-red-500\">{(results?.max_temperature ?? results?.temperature_stats?.max ?? 0).toFixed(1)}°C</span>
+                      </div>
+                      <div className=\"flex justify-between items-center\">
+                        <span className=\"text-xs\">Min</span>
+                        <span className=\"text-sm font-mono font-bold text-blue-500\">{(results?.min_temperature ?? results?.temperature_stats?.min ?? 0).toFixed(1)}°C</span>
+                      </div>
+                      <div className=\"flex justify-between items-center border-t pt-1 mt-1\">
+                        <span className=\"text-xs\">Moyenne</span>
+                        <span className=\"text-sm font-mono font-bold\">{(results?.average_temperature ?? results?.temperature_stats?.avg ?? 0).toFixed(1)}°C</span>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className=\"bg-background/80 backdrop-blur-sm border-none shadow-md w-48\">
+                    <CardHeader className=\"p-3 pb-0\">
+                      <CardTitle className=\"text-xs font-bold uppercase tracking-wider text-muted-foreground\">Convergence</CardTitle>
+                    </CardHeader>
+                    <CardContent className=\"p-3 pt-2 space-y-1\">
+                      <div className=\"flex justify-between items-center\">
+                        <span className=\"text-xs\">Itérations</span>
+                        <span className=\"text-sm font-mono font-bold\">{results?.iterations || results?.convergence_metrics?.iterations || '0'}</span>
+                      </div>
+                      <div className=\"flex justify-between items-center\">
+                        <span className=\"text-xs\">Résidu</span>
+                        <span className=\"text-sm font-mono font-bold text-green-600\">{(results?.final_residual || results?.convergence_metrics?.final_residual || 0).toExponential(2)}</span>
+                      </div>
+                    </CardContent>
                   </Card>
                 </div>
               </>
             ) : (
-              <div className="flex items-center justify-center h-full text-muted-foreground">
-                {uploadingFile ? <Loader2 className="h-8 w-8 animate-spin" /> : <p>Configurez et lancez une simulation.</p>}
+              <div className=\"flex items-center justify-center h-full text-muted-foreground\">
+                {uploadingFile ? (
+                  <div className=\"text-center\">
+                    <Loader2 className=\"h-8 w-8 animate-spin mx-auto mb-2\" />
+                    <p>{uploadPhase === 'uploading' ? 'Upload en cours...' : 'Finalisation...'}</p>
+                    <p className=\"text-xs mt-1\">{uploadProgress}%</p>
+                  </div>
+                ) : (
+                  <p>Configurez et lancez une simulation pour visualiser les résultats.</p>
+                )}
+              </div>
+            )}
+            {selectedPoint && (
+              <div className=\"absolute bottom-4 left-4 bg-background/80 backdrop-blur-sm p-3 rounded-lg shadow-lg text-sm\">
+                <h4 className=\"font-semibold mb-1\">Détails du point</h4>
+                <p>Position: ({selectedPoint.position.map((c) => c.toFixed(2)).join(', ')})</p>
+                {Object.entries(selectedPoint.field_values).map(([key, value]) => (
+                  <p key={key}>
+                    {key}: {value.toFixed(2)} {prepareViewerData?.fields.find((f) => f.id === key)?.units || ''}
+                  </p>
+                ))}
               </div>
             )}
           </CardContent>
         </Card>
 
-        <Card className="flex flex-col">
-          <CardHeader><CardTitle>Configuration</CardTitle></CardHeader>
-          <CardContent className="flex-1 overflow-y-auto space-y-4">
-            <div className="grid gap-2">
-              <Label>Nom</Label>
-              <Input name="name" value={formData.name} onChange={handleInputChange} />
+        <Card className=\"flex flex-col\">
+          <CardHeader>
+            <CardTitle className=\"flex items-center gap-2\">
+              <Settings className=\"h-5 w-5\" />
+              Configuration de la Simulation
+            </CardTitle>
+          </CardHeader>
+          <CardContent className=\"flex-1 overflow-y-auto space-y-6\">
+            <div className=\"grid gap-2\">
+              <Label htmlFor=\"name\">Nom de la simulation</Label>
+              <Input id=\"name\" name=\"name\" value={formData.name} onChange={handleInputChange} placeholder=\"Ma simulation\" />
             </div>
-            <div className="grid gap-2">
-              <Label>Matériau</Label>
-              <Select value={formData.materialId} onValueChange={v => handleSelectChange('materialId', v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+            <div className=\"grid gap-2\">
+              <Label htmlFor=\"description\">Description</Label>
+              <Textarea
+                id=\"description\"
+                name=\"description\"
+                value={formData.description}
+                onChange={handleInputChange}
+                placeholder=\"Description de la simulation...\"
+                rows={3}
+              />
+            </div>
+
+            <Separator />
+
+            <div className=\"grid gap-2\">
+              <Label>Type de Géométrie</Label>
+              <Select
+                value={formData.geometryType}
+                onValueChange={(value: 'simple' | 'complex') => handleSelectChange('geometryType', value)}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder=\"Sélectionner le type de géométrie\" />
+                </SelectTrigger>
                 <SelectContent>
-                  {materialsData.map(m => <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>)}
+                  <SelectItem value=\"simple\">Simple (dimensions)</SelectItem>
+                  <SelectItem value=\"complex\">Complexe (Import STL/STEP)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <div className="grid grid-cols-3 gap-2">
-              <div className="grid gap-1">
-                <Label>NX</Label>
-                <Input type="number" value={formData.nx} onChange={e => setFormData(p => ({ ...p, nx: parseInt(e.target.value) }))} />
+
+            {formData.geometryType === 'simple' ? (
+              <div className=\"grid grid-cols-3 gap-4\">
+                <div className=\"grid gap-2\">
+                  <Label htmlFor=\"width\">Largeur (mm)</Label>
+                  <Input
+                    id=\"width\"
+                    type=\"number\"
+                    value={formData.geometryConfig.dimensions.width}
+                    onChange={(e) => handleGeometryDimensionChange('width', e.target.value)}
+                  />
+                </div>
+                <div className=\"grid gap-2\">
+                  <Label htmlFor=\"height\">Hauteur (mm)</Label>
+                  <Input
+                    id=\"height\"
+                    type=\"number\"
+                    value={formData.geometryConfig.dimensions.height}
+                    onChange={(e) => handleGeometryDimensionChange('height', e.target.value)}
+                  />
+                </div>
+                <div className=\"grid gap-2\">
+                  <Label htmlFor=\"depth\">Profondeur (mm)</Label>
+                  <Input
+                    id=\"depth\"
+                    type=\"number\"
+                    value={formData.geometryConfig.dimensions.depth}
+                    onChange={(e) => handleGeometryDimensionChange('depth', e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="grid gap-1">
-                <Label>NY</Label>
-                <Input type="number" value={formData.ny} onChange={e => setFormData(p => ({ ...p, ny: parseInt(e.target.value) }))} />
+            ) : (
+              <div className=\"grid gap-4\">
+                <div className=\"flex flex-col items-center justify-center border-2 border-dashed rounded-lg p-6 bg-muted/50\">
+                  <FileUp className=\"h-8 w-8 text-muted-foreground mb-2\" />
+                  <p className=\"text-sm text-muted-foreground mb-4 text-center\">
+                    {formData.geometryConfig.file_name
+                      ? `Fichier actuel: ${formData.geometryConfig.file_name}`
+                      : 'Glissez-déposez ou cliquez pour importer un fichier STL, STEP ou OBJ'}
+                  </p>
+                  <Input
+                    type=\"file\"
+                    className=\"hidden\"
+                    id=\"geometry-upload\"
+                    accept=\".stl,.step,.stp,.obj\"
+                    onChange={handleFileUpload}
+                  />
+                  <Button asChild variant=\"outline\" disabled={uploadingFile}>
+                    <label htmlFor=\"geometry-upload\">
+                      {uploadingFile ? <Loader2 className=\"mr-2 h-4 w-4 animate-spin\" /> : <FileUp className=\"mr-2 h-4 w-4\" />}
+                      {formData.geometryConfig.file_name ? 'Changer de fichier' : 'Importer une géométrie'}
+                    </label>
+                  </Button>
+                </div>
+                {uploadError && (
+                  <Alert variant=\"destructive\">
+                    <AlertCircle className=\"h-4 w-4\" />
+                    <AlertDescription>{uploadError}</AlertDescription>
+                  </Alert>
+                )}
               </div>
-              <div className="grid gap-1">
-                <Label>NZ</Label>
-                <Input type="number" value={formData.nz} onChange={e => setFormData(p => ({ ...p, nz: parseInt(e.target.value) }))} />
+            )}
+
+            <Separator />
+
+            <div className=\"grid gap-4\">
+              <div className=\"grid gap-2\">
+                <Label>Matériau</Label>
+                <Select value={formData.materialId} onValueChange={(value) => handleSelectChange('materialId', value)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder=\"Sélectionner un matériau\" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {materialsData.map((material) => (
+                      <SelectItem key={material.id} value={material.id}>
+                        {material.name} ({material.conductivity} W/m·K)
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className=\"grid gap-2\">
+                <Label>Densité du Maillage</Label>
+                <Select value={formData.meshDensity} onValueChange={(value: any) => handleSelectChange('meshDensity', value)}>
+                  <SelectTrigger>
+                    <SelectValue placeholder=\"Densité du maillage\" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value=\"low\">Basse (Rapide)</SelectItem>
+                    <SelectItem value=\"medium\">Moyenne (Équilibrée)</SelectItem>
+                    <SelectItem value=\"high\">Haute (Précise)</SelectItem>
+                  </SelectContent>
+                </Select>
+                <div className=\"grid grid-cols-3 gap-2 mt-1\">
+                  <div className=\"flex flex-col gap-1\">
+                    <span className=\"text-[10px] uppercase text-muted-foreground\">NX</span>
+                    <Input
+                      type=\"number\"
+                      className=\"h-7 text-xs\"
+                      value={formData.nx}
+                      onChange={(e) => setFormData((p) => ({ ...p, nx: parseInt(e.target.value) || 1 }))}
+                    />
+                  </div>
+                  <div className=\"flex flex-col gap-1\">
+                    <span className=\"text-[10px] uppercase text-muted-foreground\">NY</span>
+                    <Input
+                      type=\"number\"
+                      className=\"h-7 text-xs\"
+                      value={formData.ny}
+                      onChange={(e) => setFormData((p) => ({ ...p, ny: parseInt(e.target.value) || 1 }))}
+                    />
+                  </div>
+                  <div className=\"flex flex-col gap-1\">
+                    <span className=\"text-[10px] uppercase text-muted-foreground\">NZ</span>
+                    <Input
+                      type=\"number\"
+                      className=\"h-7 text-xs\"
+                      value={formData.nz}
+                      onChange={(e) => setFormData((p) => ({ ...p, nz: parseInt(e.target.value) || 1 }))}
+                    />
+                  </div>
+                </div>
               </div>
             </div>
-            <div className="grid gap-2">
-              <Label>Fichier Géométrie</Label>
-              <Input type="file" onChange={handleFileUpload} />
-            </div>
-            <div className="grid gap-2">
-              <Label>Solveur</Label>
-              <Select value={formData.solverType} onValueChange={v => handleSelectChange('solverType', v)}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="fem_fortran">Fortran</SelectItem>
-                  <SelectItem value="openfoam">OpenFOAM</SelectItem>
-                </SelectContent>
-              </Select>
+
+            <Separator />
+
+            <div className=\"grid gap-4\">
+              <h3 className=\"font-medium text-sm\">Conditions Limites & Solver</h3>
+              <div className=\"grid grid-cols-2 gap-4\">
+                <div className=\"grid gap-2\">
+                  <Label htmlFor=\"initialTemp\">Temp. Initiale (°C)</Label>
+                  <Input id=\"initialTemp\" name=\"initialTemp\" value={formData.initialTemp} onChange={handleInputChange} />
+                </div>
+                <div className=\"grid gap-2\">
+                  <Label htmlFor=\"ambientTemp\">Temp. Ambiante (°C)</Label>
+                  <Input id=\"ambientTemp\" name=\"ambientTemp\" value={formData.ambientTemp} onChange={handleInputChange} />
+                </div>
+              </div>
+
+              <div className=\"grid gap-2\">
+                <Label>Type de Refroidissement</Label>
+                <Select value={formData.coolingType} onValueChange={(value: any) => handleSelectChange('coolingType', value)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value=\"natural_convection\">Convection Naturelle</SelectItem>
+                    <SelectItem value=\"forced_convection\">Convection Forcée</SelectItem>
+                    <SelectItem value=\"radiation\">Radiation</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className=\"grid gap-2\">
+                <Label>Solveur Numérique</Label>
+                <Select value={formData.solverType} onValueChange={(value: any) => handleSelectChange('solverType', value)}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value=\"fem_fortran\">VoltFlow Solver (Fortran/FEM)</SelectItem>
+                    <SelectItem value=\"openfoam\">OpenFOAM (CFD)</SelectItem>
+                    <SelectItem value=\"pinn\">Physics-Informed Neural Network (AI)</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
           </CardContent>
         </Card>
